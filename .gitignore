@@ -18,3 +18,4 @@ PUBLISHING.md
 
 # Packaged builds (never commit; produce them via `vsce package`).
 *.vsix
+.DS_Store
