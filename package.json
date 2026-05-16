@@ -12,7 +12,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/leifstout/react-luau-props-helper.git"
+    "url": "https://github.com/ericplane/Luix.git"
   },
   "engines": {
     "vscode": "^1.85.0"
