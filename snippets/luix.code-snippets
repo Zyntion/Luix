@@ -1,0 +1,323 @@
+{
+  "Frame": {
+    "prefix": "eFrame",
+    "scope": "lua,luau",
+    "body": [
+      "e(\"Frame\", {",
+      "\tSize = UDim2.fromScale(${1:1}, ${2:1}),",
+      "\tBackgroundTransparency = ${3:1},",
+      "\t$4",
+      "}, {",
+      "\t$0",
+      "})"
+    ],
+    "description": "Frame element with children slot"
+  },
+  "ScrollingFrame": {
+    "prefix": "eScrollingFrame",
+    "scope": "lua,luau",
+    "body": [
+      "e(\"ScrollingFrame\", {",
+      "\tSize = UDim2.fromScale(1, 1),",
+      "\tBackgroundTransparency = 1,",
+      "\tScrollBarThickness = ${1:6},",
+      "\tCanvasSize = UDim2.new(${2:0, 0, 0, 0}),",
+      "\t$3",
+      "}, {",
+      "\t$0",
+      "})"
+    ],
+    "description": "ScrollingFrame element"
+  },
+  "TextLabel": {
+    "prefix": "eTextLabel",
+    "scope": "lua,luau",
+    "body": [
+      "e(\"TextLabel\", {",
+      "\tText = \"${1:Hello}\",",
+      "\tTextColor3 = Color3.fromRGB(${2:255}, ${3:255}, ${4:255}),",
+      "\tTextSize = ${5:18},",
+      "\tBackgroundTransparency = 1,",
+      "\tSize = UDim2.fromScale(1, 0),",
+      "\tAutomaticSize = Enum.AutomaticSize.Y,",
+      "\t$0",
+      "})"
+    ],
+    "description": "TextLabel element"
+  },
+  "TextButton": {
+    "prefix": "eTextButton",
+    "scope": "lua,luau",
+    "body": [
+      "e(\"TextButton\", {",
+      "\tText = \"${1:Click me}\",",
+      "\tTextColor3 = Color3.fromRGB(${2:255}, ${3:255}, ${4:255}),",
+      "\tTextSize = ${5:18},",
+      "\tBackgroundTransparency = ${6:0},",
+      "\tSize = UDim2.fromOffset(${7:120}, ${8:40}),",
+      "\tAutoButtonColor = ${9:true},",
+      "\t[React.Event.Activated] = function()",
+      "\t\t$0",
+      "\tend,",
+      "})"
+    ],
+    "description": "TextButton with Activated handler"
+  },
+  "ImageLabel": {
+    "prefix": "eImageLabel",
+    "scope": "lua,luau",
+    "body": [
+      "e(\"ImageLabel\", {",
+      "\tImage = \"${1:rbxassetid://0}\",",
+      "\tBackgroundTransparency = 1,",
+      "\tSize = UDim2.fromScale(1, 1),",
+      "\tScaleType = Enum.ScaleType.Fit,",
+      "\t$0",
+      "})"
+    ],
+    "description": "ImageLabel element"
+  },
+  "ImageButton": {
+    "prefix": "eImageButton",
+    "scope": "lua,luau",
+    "body": [
+      "e(\"ImageButton\", {",
+      "\tImage = \"${1:rbxassetid://0}\",",
+      "\tBackgroundTransparency = 1,",
+      "\tSize = UDim2.fromScale(1, 1),",
+      "\tScaleType = Enum.ScaleType.Fit,",
+      "\tAutoButtonColor = false,",
+      "\t[React.Event.Activated] = function()",
+      "\t\t$0",
+      "\tend,",
+      "})"
+    ],
+    "description": "ImageButton with Activated handler"
+  },
+  "UIListLayout": {
+    "prefix": "eUIListLayout",
+    "scope": "lua,luau",
+    "body": [
+      "e(\"UIListLayout\", {",
+      "\tFillDirection = Enum.FillDirection.${1|Vertical,Horizontal|},",
+      "\tHorizontalAlignment = Enum.HorizontalAlignment.${2|Left,Center,Right|},",
+      "\tVerticalAlignment = Enum.VerticalAlignment.${3|Top,Center,Bottom|},",
+      "\tSortOrder = Enum.SortOrder.LayoutOrder,",
+      "\tPadding = UDim.new(0, ${4:8}),",
+      "\t$0",
+      "})"
+    ],
+    "description": "UIListLayout"
+  },
+  "UIGridLayout": {
+    "prefix": "eUIGridLayout",
+    "scope": "lua,luau",
+    "body": [
+      "e(\"UIGridLayout\", {",
+      "\tCellSize = UDim2.fromOffset(${1:100}, ${2:100}),",
+      "\tCellPadding = UDim2.fromOffset(${3:8}, ${4:8}),",
+      "\tHorizontalAlignment = Enum.HorizontalAlignment.Left,",
+      "\tSortOrder = Enum.SortOrder.LayoutOrder,",
+      "\t$0",
+      "})"
+    ],
+    "description": "UIGridLayout"
+  },
+  "UIPadding": {
+    "prefix": "eUIPadding",
+    "scope": "lua,luau",
+    "body": [
+      "e(\"UIPadding\", {",
+      "\tPaddingTop = UDim.new(0, ${1:8}),",
+      "\tPaddingBottom = UDim.new(0, ${2:8}),",
+      "\tPaddingLeft = UDim.new(0, ${3:8}),",
+      "\tPaddingRight = UDim.new(0, ${4:8}),",
+      "\t$0",
+      "})"
+    ],
+    "description": "UIPadding (all sides)"
+  },
+  "UICorner": {
+    "prefix": "eUICorner",
+    "scope": "lua,luau",
+    "body": ["e(\"UICorner\", {", "\tCornerRadius = UDim.new(0, ${1:8}),", "})$0"],
+    "description": "UICorner"
+  },
+  "UIStroke": {
+    "prefix": "eUIStroke",
+    "scope": "lua,luau",
+    "body": [
+      "e(\"UIStroke\", {",
+      "\tColor = Color3.fromRGB(${1:255}, ${2:255}, ${3:255}),",
+      "\tThickness = ${4:1},",
+      "\tApplyStrokeMode = Enum.ApplyStrokeMode.Contextual,",
+      "\t$0",
+      "})"
+    ],
+    "description": "UIStroke"
+  },
+  "useState": {
+    "prefix": "useState",
+    "scope": "lua,luau",
+    "body": [
+      "local ${1:value}, set${1/(.)/${1:/upcase}/} = React.useState(${2:nil})$0"
+    ],
+    "description": "React.useState"
+  },
+  "useEffect": {
+    "prefix": "useEffect",
+    "scope": "lua,luau",
+    "body": [
+      "React.useEffect(function()",
+      "\t$0",
+      "end, { $1 })"
+    ],
+    "description": "React.useEffect"
+  },
+  "useRef": {
+    "prefix": "useRef",
+    "scope": "lua,luau",
+    "body": ["local ${1:ref} = React.useRef(${2:nil})$0"],
+    "description": "React.useRef"
+  },
+  "useMemo": {
+    "prefix": "useMemo",
+    "scope": "lua,luau",
+    "body": [
+      "local ${1:value} = React.useMemo(function()",
+      "\treturn $0",
+      "end, { $2 })"
+    ],
+    "description": "React.useMemo"
+  },
+  "useCallback": {
+    "prefix": "useCallback",
+    "scope": "lua,luau",
+    "body": [
+      "local ${1:onCallback} = React.useCallback(function($2)",
+      "\t$0",
+      "end, { $3 })"
+    ],
+    "description": "React.useCallback"
+  },
+  "Function component scaffold": {
+    "prefix": "rfc",
+    "scope": "lua,luau",
+    "body": [
+      "local function ${1:Name}(props): React.ReactNode",
+      "\treturn e(\"${2:Frame}\", {",
+      "\t\tSize = UDim2.fromScale(1, 1),",
+      "\t\tBackgroundTransparency = 1,",
+      "\t\t$3",
+      "\t}, {",
+      "\t\t$0",
+      "\t})",
+      "end",
+      "",
+      "return $1"
+    ],
+    "description": "React-Luau function component scaffold"
+  },
+  "Fusion Frame": {
+    "prefix": "nFrame",
+    "scope": "lua,luau",
+    "body": [
+      "New \"Frame\" {",
+      "\tSize = UDim2.fromScale(${1:1}, ${2:1}),",
+      "\tBackgroundTransparency = ${3:1},",
+      "\t$4",
+      "\t[Children] = {",
+      "\t\t$0",
+      "\t},",
+      "}"
+    ],
+    "description": "Fusion Frame element with [Children]"
+  },
+  "Fusion TextLabel": {
+    "prefix": "nTextLabel",
+    "scope": "lua,luau",
+    "body": [
+      "New \"TextLabel\" {",
+      "\tText = \"${1:Hello}\",",
+      "\tTextColor3 = Color3.fromRGB(${2:255}, ${3:255}, ${4:255}),",
+      "\tTextSize = ${5:18},",
+      "\tBackgroundTransparency = 1,",
+      "\tSize = UDim2.fromScale(1, 0),",
+      "\tAutomaticSize = Enum.AutomaticSize.Y,",
+      "\t$0",
+      "}"
+    ],
+    "description": "Fusion TextLabel"
+  },
+  "Fusion TextButton": {
+    "prefix": "nTextButton",
+    "scope": "lua,luau",
+    "body": [
+      "New \"TextButton\" {",
+      "\tText = \"${1:Click me}\",",
+      "\tSize = UDim2.fromOffset(${2:120}, ${3:40}),",
+      "\tBackgroundColor3 = Color3.fromRGB(${4:80}, ${5:80}, ${6:80}),",
+      "\tAutoButtonColor = true,",
+      "\t[OnEvent \"Activated\"] = function()",
+      "\t\t$0",
+      "\tend,",
+      "}"
+    ],
+    "description": "Fusion TextButton with [OnEvent \"Activated\"]"
+  },
+  "Vide Frame": {
+    "prefix": "cFrame",
+    "scope": "lua,luau",
+    "body": [
+      "create \"Frame\" {",
+      "\tSize = UDim2.fromScale(${1:1}, ${2:1}),",
+      "\tBackgroundTransparency = ${3:1},",
+      "\t$4",
+      "\t$0",
+      "}"
+    ],
+    "description": "Vide Frame element (inline children)"
+  },
+  "Vide TextLabel": {
+    "prefix": "cTextLabel",
+    "scope": "lua,luau",
+    "body": [
+      "create \"TextLabel\" {",
+      "\tText = \"${1:Hello}\",",
+      "\tTextColor3 = Color3.fromRGB(${2:255}, ${3:255}, ${4:255}),",
+      "\tTextSize = ${5:18},",
+      "\tBackgroundTransparency = 1,",
+      "\tSize = UDim2.fromScale(1, 0),",
+      "\tAutomaticSize = Enum.AutomaticSize.Y,",
+      "\t$0",
+      "}"
+    ],
+    "description": "Vide TextLabel"
+  },
+  "Vide TextButton": {
+    "prefix": "cTextButton",
+    "scope": "lua,luau",
+    "body": [
+      "create \"TextButton\" {",
+      "\tText = \"${1:Click me}\",",
+      "\tSize = UDim2.fromOffset(${2:120}, ${3:40}),",
+      "\tBackgroundColor3 = Color3.fromRGB(${4:80}, ${5:80}, ${6:80}),",
+      "\tAutoButtonColor = true,",
+      "\tActivated = function()",
+      "\t\t$0",
+      "\tend,",
+      "}"
+    ],
+    "description": "Vide TextButton (events as plain props)"
+  },
+  "React.Event.Activated handler": {
+    "prefix": "reactEvent",
+    "scope": "lua,luau",
+    "body": [
+      "[React.Event.${1|Activated,MouseEnter,MouseLeave,MouseButton1Click,InputBegan,InputEnded|}] = function(${2:rbx})",
+      "\t$0",
+      "end,"
+    ],
+    "description": "React.Event handler entry"
+  }
+}

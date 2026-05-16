@@ -1,0 +1,20 @@
+# Build outputs
+out
+dist
+
+# Dependencies
+node_modules
+package-lock.json
+
+# Test scaffolding
+.vscode-test/
+
+# Local agent sessions
+.claude/
+
+# Publisher / release notes (kept off the repo so different forks can
+# document their own publish flow).
+PUBLISHING.md
+
+# Packaged builds (never commit; produce them via `vsce package`).
+*.vsix

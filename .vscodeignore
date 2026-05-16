@@ -1,0 +1,32 @@
+# Anything not strictly needed at runtime is excluded from the .vsix.
+
+# Sources & build inputs (we ship compiled JS in out/).
+src/**
+out/test/**
+scripts/**
+**/*.map
+**/*.ts
+**/tsconfig.json
+**/eslint.config.mjs
+
+# Dev environment.
+.vscode/**
+.vscode-test/**
+.vscode-test.mjs
+.yarnrc
+node_modules/**
+
+# Repo metadata not relevant to extension consumers.
+.gitignore
+.gitattributes
+**/.git/**
+.claude/**
+vsc-extension-quickstart.md
+PUBLISHING.md
+CONTRIBUTING.md
+
+# Icon: we ship the rendered PNG; the SVG source stays in the repo only.
+assets/icon.svg
+
+# Previously packaged builds.
+*.vsix

@@ -1,0 +1,27 @@
+<svg width="128" height="128" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background: dark rounded square -->
+  <rect width="128" height="128" rx="24" fill="#15151a"/>
+
+  <!-- Subtle inner glow -->
+  <rect x="2" y="2" width="124" height="124" rx="22" fill="none"
+        stroke="#26262e" stroke-width="1"/>
+
+  <!-- "L" stroke -->
+  <path d="M40 30 L40 92 L74 92"
+        stroke="#7c5cff"
+        stroke-width="12"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        fill="none"/>
+
+  <!-- "<" accent (angle bracket = the UI/JSX nod) -->
+  <path d="M104 50 L86 64 L104 78"
+        stroke="#a48bff"
+        stroke-width="10"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        fill="none"/>
+
+  <!-- Small completion-tick dot -->
+  <circle cx="78" cy="44" r="4" fill="#7c5cff" opacity="0.85"/>
+</svg>

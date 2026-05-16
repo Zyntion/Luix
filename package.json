@@ -1,0 +1,448 @@
+{
+  "name": "luix",
+  "displayName": "Luix",
+  "description": "All-in-one Roblox UI authoring helper for React-Luau, Fusion, Vide, and Roact — prop completions, hover docs, inlay hints, color preview, deprecation diagnostics, and more.",
+  "version": "1.0.0",
+  "publisher": "ericplane",
+  "icon": "assets/icon.png",
+  "author": {
+    "name": "ericplane",
+    "url": "https://github.com/ericplane"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/leifstout/react-luau-props-helper.git"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Snippets",
+    "Linters"
+  ],
+  "keywords": [
+    "roblox",
+    "luau",
+    "lua",
+    "react",
+    "react-luau",
+    "roact",
+    "fusion",
+    "vide",
+    "ui",
+    "intellisense",
+    "completion",
+    "wally",
+    "rojo"
+  ],
+  "galleryBanner": {
+    "color": "#15151a",
+    "theme": "dark"
+  },
+  "activationEvents": [
+    "onLanguage:lua",
+    "onLanguage:luau"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "lua",
+        "aliases": [
+          "Lua"
+        ],
+        "extensions": [
+          ".lua"
+        ]
+      },
+      {
+        "id": "luau",
+        "aliases": [
+          "Luau"
+        ],
+        "extensions": [
+          ".luau"
+        ]
+      }
+    ],
+    "snippets": [
+      {
+        "language": "lua",
+        "path": "./snippets/luix.code-snippets"
+      },
+      {
+        "language": "luau",
+        "path": "./snippets/luix.code-snippets"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "luix",
+          "title": "Luix",
+          "icon": "assets/sidebar-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "luix": [
+        {
+          "id": "luix.workspace",
+          "name": "Workspace"
+        },
+        {
+          "id": "luix.components",
+          "name": "Components"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "luix.components",
+        "contents": "No UI components found in this workspace yet.\n\nLuix lists every function that returns an `e(...)`, `New \"X\" { ... }`, or `create \"X\" { ... }` element, or that carries a `---@extends ClassName` annotation.\n\n[Create a new component](command:luix.newComponentHere)\n\n[Open the Luix documentation](https://github.com/ericplane/luix)\n\nIf you do have components but they're not appearing, they might be excluded by `luix.exclude` — check your [settings](command:workbench.action.openSettings?%22luix%22).",
+        "when": "workspaceFolderCount > 0"
+      },
+      {
+        "view": "luix.components",
+        "contents": "Open a workspace folder to see components.\n\n[Open Folder](command:vscode.openFolder)",
+        "when": "workspaceFolderCount == 0"
+      }
+    ],
+    "commands": [
+      {
+        "command": "luix.wally.regenerateTypes",
+        "title": "Luix: Regenerate Wally types",
+        "category": "Luix"
+      },
+      {
+        "command": "luix.wally.install",
+        "title": "Luix: Run wally install",
+        "category": "Luix"
+      },
+      {
+        "command": "luix.rojo.generateSourcemap",
+        "title": "Luix: Generate Rojo sourcemap",
+        "category": "Luix"
+      },
+      {
+        "command": "luix.newComponent.react",
+        "title": "Luix: New React component file",
+        "category": "Luix"
+      },
+      {
+        "command": "luix.newComponent.fusion",
+        "title": "Luix: New Fusion component file",
+        "category": "Luix"
+      },
+      {
+        "command": "luix.newComponent.vide",
+        "title": "Luix: New Vide component file",
+        "category": "Luix"
+      },
+      {
+        "command": "luix.newComponentHere",
+        "title": "Luix: New component here…",
+        "category": "Luix"
+      },
+      {
+        "command": "luix.refreshComponents",
+        "title": "Luix: Refresh component browser",
+        "category": "Luix",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "luix.refreshWorkspace",
+        "title": "Luix: Refresh workspace view",
+        "category": "Luix",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "luix.componentsView.toggleMode",
+        "title": "Luix: Toggle components view (tree / flat)",
+        "category": "Luix",
+        "icon": "$(list-tree)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "luix.componentsView.toggleMode",
+          "when": "view == luix.components",
+          "group": "navigation@1"
+        },
+        {
+          "command": "luix.refreshComponents",
+          "when": "view == luix.components",
+          "group": "navigation@2"
+        },
+        {
+          "command": "luix.refreshWorkspace",
+          "when": "view == luix.workspace",
+          "group": "navigation"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "luix.newComponentHere",
+          "when": "explorerResourceIsFolder",
+          "group": "navigation@5"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Luix",
+      "properties": {
+        "luix.frameworks": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "react",
+              "roact",
+              "fusion",
+              "vide"
+            ]
+          },
+          "default": [
+            "react",
+            "roact",
+            "fusion",
+            "vide"
+          ],
+          "markdownDescription": "Which Roblox UI frameworks Luix recognises. Disable the ones you don't use to keep completions tight. Each framework has its own call syntax — Luix picks up `e(...)` / `Roact.createElement(...)` (parens form) and `New \"X\" {...}` / `create \"X\" {...}` (curried form) accordingly."
+        },
+        "luix.react.aliases": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "Override the React-Luau factory aliases (`e`, `createElement`, `React.createElement`). Leave empty to use the defaults."
+        },
+        "luix.roact.aliases": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "Override the Roact factory aliases (`Roact.createElement`). Leave empty to use the default."
+        },
+        "luix.fusion.aliases": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "Override the Fusion factory aliases (`New`, `Fusion.New`). Leave empty to use the defaults."
+        },
+        "luix.vide.aliases": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "Override the Vide factory aliases (`create`, `vide.create`). Leave empty to use the defaults."
+        },
+        "luix.props": {
+          "type": "object",
+          "default": {},
+          "additionalProperties": {
+            "oneOf": [
+              {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "extends": {
+                    "type": "string",
+                    "description": "Name of the class to inherit props from (e.g. \"Frame\")."
+                  },
+                  "props": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Additional props specific to this component."
+                  }
+                },
+                "additionalProperties": false
+              }
+            ]
+          },
+          "markdownDescription": "Per-class prop list. Each entry overrides the built-in defaults for that class — presence of a key is authoritative, so an explicit empty array (`[]`) disables completions for that class. Custom component identifiers (e.g. `MyButton`) can be added here too. Two shapes:\n\n```jsonc\n{\n  // Array form: just the prop list.\n  \"TextLabel\": [\"Text\", \"TextColor3\"],\n  \"MyButton\": [\"label\", \"onClick\", \"disabled\"],\n  // Object form: extend a class and add extras.\n  \"GamepassCard\": { \"extends\": \"Frame\", \"props\": [\"gamepassId\"] }\n}\n```\n\nMost custom components don't need this — the extension can usually infer props from in-file annotations, typed signatures, or the component's root `createElement` call. Use config when the component lives in a file the extension can't reach or when you want central overrides."
+        },
+        "luix.createElementAliases": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "Legacy global alias override. Prefer the per-framework `luix.<framework>.aliases` settings — they let you keep the call-shape distinction (parens vs curried). This list, if non-empty, is treated as parens-form and added to whatever frameworks are enabled."
+        },
+        "luix.snippetMode": {
+          "type": "string",
+          "enum": [
+            "value",
+            "value-with-comma",
+            "name-only"
+          ],
+          "enumDescriptions": [
+            "Insert `Name = ` and place the cursor after the equals sign.",
+            "Insert `Name = ,` with the first tab stop at the value and the final tab stop after the comma (recommended for Lua table syntax).",
+            "Insert just the property name."
+          ],
+          "default": "value-with-comma",
+          "markdownDescription": "Controls what gets inserted when you accept a completion."
+        },
+        "luix.typeAwareValues": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "When the prop's type is known (e.g. `BackgroundColor3` is `Color3`), insert a value template alongside the prop name. For example, `BackgroundColor3` becomes `BackgroundColor3 = Color3.fromRGB(255, 255, 255)` with tab stops at each colour channel. Disable for the older minimal-snippet behaviour."
+        },
+        "luix.documentSymbols.enabled": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "When enabled (default), Luix provides Document Symbols for the React tree — visible in the Outline panel, the Breadcrumbs bar, and `Cmd+Shift+O` (Go to Symbol in File). Disable if you prefer your editor's outline to show only top-level Lua structure."
+        },
+        "luix.colorPreview.enabled": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "When enabled (default), `Color3.fromRGB(...)` and `Color3.new(...)` get a gutter swatch and a colour picker. Disable if another extension (such as a Roblox API extension) already provides this and you're seeing duplicate pickers."
+        },
+        "luix.palette": {
+          "type": "object",
+          "default": {},
+          "additionalProperties": {
+            "type": "string"
+          },
+          "markdownDescription": "Project palette: named colours that appear as completions when you type `Color3.`. Each value should be the full Roblox expression to insert. Example:\n\n```jsonc\n{\n  \"luix.palette\": {\n    \"primary\":    \"Color3.fromRGB(124, 92, 255)\",\n    \"background\": \"Color3.fromRGB(21, 21, 26)\",\n    \"surface\":    \"Color3.fromRGB(28, 30, 38)\",\n    \"text\":       \"Color3.fromRGB(255, 255, 255)\"\n  }\n}\n```\n\nTyping `BackgroundColor3 = Color3.` then `palette.primary` inserts the full `Color3.fromRGB(124, 92, 255)` expression."
+        },
+        "luix.exclude": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "Extra directory names to skip when indexing components. Luix already excludes `Packages`, `DevPackages`, `ServerPackages`, `_Index`, `node_modules`, `out`, and `dist` by default — list anything else here. Match is by directory **name**, anywhere in the file path (so `\"Tests\"` skips every `Tests/` folder in the workspace)."
+        },
+        "luix.componentsRoot": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Optional. Workspace-relative path to the folder that holds your UI components (e.g. `src/Client/UI/Components`). When set, the Components view's tree mode is rooted there and only shows components under that folder. Flat mode still shows everything. Leave empty to root the tree at each workspace folder."
+        },
+        "luix.inlayHints.enabled": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "When enabled (default), every multi-line element call gets a label at its closing `)` (parens form) or `}` (curried form) showing the element's class. VS Code's master toggle is `editor.inlayHints.enabled`; this lets you disable just Luix's hints."
+        },
+        "luix.inlayHints.scope": {
+          "type": "string",
+          "enum": [
+            "all",
+            "ancestors"
+          ],
+          "enumDescriptions": [
+            "Show hints for every multi-line element call in the file.",
+            "Only show hints for calls that contain the cursor (the innermost call and each of its ancestors). Keeps the rest of the file uncluttered. (Default.)"
+          ],
+          "default": "ancestors",
+          "markdownDescription": "How many inlay hints to show at once."
+        },
+        "luix.inlayHints.position": {
+          "type": "string",
+          "enum": [
+            "before-comma",
+            "after-comma"
+          ],
+          "enumDescriptions": [
+            "Render the label between the closing `)` / `}` and the trailing `,`.",
+            "Render the label after the trailing `,`, so the comma stays glued to the closing punctuation. (Default.)"
+          ],
+          "default": "after-comma",
+          "markdownDescription": "Where to render the inlay-hint label relative to the trailing comma."
+        },
+        "luix.warnReservedPropNames": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Warn when a custom component declares a `---@prop` whose name shadows a Roblox property of its declared (or detected) base class. Off by default to avoid surprising users with new warnings."
+        },
+        "luix.deprecationDiagnostics": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Show diagnostics for deprecated patterns: `Font = Enum.Font.X` (use `FontFace`), `TextColor = ...` (typo of `TextColor3`). Quick-fixes available via the lightbulb."
+        },
+        "luix.autoImport.enabled": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Opt-in. When enabled, `e(SomeComponent, …)` for a component the workspace knows about but the current file doesn't `require` produces an Information diagnostic with a quick-fix that inserts the require line."
+        },
+        "luix.autoImport.style": {
+          "type": "string",
+          "enum": [
+            "relative",
+            "alias"
+          ],
+          "enumDescriptions": [
+            "Compute a `script.Parent…X` chain from the current file's directory to the component's file.",
+            "Use one of the configured aliases below. Falls back to `relative` if no alias matches."
+          ],
+          "default": "relative",
+          "markdownDescription": "How to build the `require(...)` path for auto-imports."
+        },
+        "luix.autoImport.aliases": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "object",
+            "properties": {
+              "filesystemPath": {
+                "type": "string",
+                "description": "Workspace-relative path prefix on disk, e.g. `src/Client/UI/Components`."
+              },
+              "robloxPath": {
+                "type": "string",
+                "description": "Roblox-style prefix to substitute, e.g. `script.Components` or `ReplicatedStorage.Packages`."
+              }
+            },
+            "required": [
+              "filesystemPath",
+              "robloxPath"
+            ]
+          },
+          "markdownDescription": "For `alias` style: map workspace-relative filesystem prefixes to Roblox-style require prefixes. The first matching alias wins."
+        },
+        "luix.suppressLegacySettingsWarning": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Suppress the one-time information message shown when Luix detects legacy `reactLuauPropsHelper.*` settings still in use. The settings continue to work either way; this just silences the prompt."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile && npm run lint",
+    "lint": "eslint src",
+    "test": "vscode-test",
+    "build-icon": "node scripts/build-icon.mjs"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.85.0",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "22.x",
+    "typescript-eslint": "^8.46.3",
+    "eslint": "^9.39.1",
+    "typescript": "^5.9.3",
+    "@vscode/test-cli": "^0.0.12",
+    "@vscode/test-electron": "^2.5.2",
+    "sharp": "^0.33.5"
+  }
+}
