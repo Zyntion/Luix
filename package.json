@@ -1,6 +1,6 @@
 {
-  "name": "luix",
-  "displayName": "Luix",
+  "name": "luix-roblox",
+  "displayName": "Luix Roblox",
   "description": "All-in-one Roblox UI authoring helper for React-Luau, Fusion, Vide, and Roact — prop completions, hover docs, inlay hints, color preview, deprecation diagnostics, and more.",
   "version": "1.0.0",
   "publisher": "ericplane",
