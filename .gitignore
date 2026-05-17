@@ -12,13 +12,8 @@ package-lock.json
 # Local agent sessions
 .claude/
 
-# Publisher / release notes (kept off the repo so different forks can
-# document their own publish flow).
-PUBLISHING.md
-
 # Packaged builds (never commit; produce them via `vsce package`).
 *.vsix
 .DS_Store
 
-# Marketing / DevForum drafts kept locally.
 devforum-post.md
