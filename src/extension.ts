@@ -1,7 +1,8 @@
 import * as vscode from "vscode";
 import {
-  ReactLuauPropsCompletionProvider,
   AnnotationCompletionProvider,
+  ClassNameCompletionProvider,
+  ReactLuauPropsCompletionProvider,
 } from "./completion";
 import {
   Color3DocumentColorProvider,
@@ -51,15 +52,29 @@ export function activate(context: vscode.ExtensionContext) {
   const workspaceIndex = new WorkspaceIndex();
   context.subscriptions.push(workspaceIndex);
 
-  // Props provider — only `.` as a trigger character (needed for
-  // `[React.Event.|` and `[React.Change.|` completion). Space/newline are
-  // deliberately *not* triggers; that would steal Tab from GitHub
-  // Copilot's inline ghost text.
+  // Props provider — `.` is needed for `[React.Event.|` and
+  // `[React.Change.|`; `{` makes the suggestion list open the moment you
+  // type the props brace so common props (`Name`, `Size`, …) appear
+  // without an extra Ctrl+Space. Space/newline are deliberately *not*
+  // triggers; that would steal Tab from GitHub Copilot's inline ghost text.
   context.subscriptions.push(
     vscode.languages.registerCompletionItemProvider(
       selector,
       new ReactLuauPropsCompletionProvider(workspaceIndex),
-      "."
+      ".",
+      "{"
+    )
+  );
+
+  // Class-name provider — fires inside the string-literal first arg of a
+  // factory call (`e("Fr|"`, `New "Fr|"`, …). Trigger chars are the
+  // quotes themselves so the list opens the instant the user types `e("`.
+  context.subscriptions.push(
+    vscode.languages.registerCompletionItemProvider(
+      selector,
+      new ClassNameCompletionProvider(),
+      '"',
+      "'"
     )
   );
 
@@ -214,6 +229,7 @@ export function deactivate() {}
 export {
   buildCodeMask,
   applyMask,
+  findEnclosingFactoryStringArg,
   findEnclosingPropsCall,
   extractTypeFields,
   parseAnnotationsForComponent,
@@ -227,6 +243,7 @@ export {
 
 export type {
   EnclosingCall,
+  EnclosingStringArg,
   ComponentAnnotations,
   DocumentComponentInfo,
   CreateElementCall,

@@ -9,6 +9,7 @@ import {
 } from "./data";
 import {
   AliasPartition,
+  findEnclosingFactoryStringArg,
   findEnclosingPropsCall,
   pushUnique,
   scanDocument,
@@ -132,6 +133,99 @@ export class ReactLuauPropsCompletionProvider
     return buildItemsForProps(detected.className, props, wordRange);
   }
 }
+
+// ============================================================================
+// Class-name completion — inside `e("Fr|"`, `New "Fr|"`, etc.
+// ============================================================================
+//
+// When the cursor is in the string-literal first argument of a factory
+// call, suggest Roblox class names (Frame, TextLabel, …). On accept, also
+// add the props braces when they're missing and drop the cursor inside.
+
+export class ClassNameCompletionProvider
+  implements vscode.CompletionItemProvider
+{
+  provideCompletionItems(
+    document: vscode.TextDocument,
+    position: vscode.Position
+  ): vscode.ProviderResult<vscode.CompletionItem[]> {
+    const text = document.getText();
+    const cursorOffset = document.offsetAt(position);
+    const ctx = findEnclosingFactoryStringArg(
+      text,
+      cursorOffset,
+      getAliasPartition()
+    );
+    if (!ctx) {
+      return undefined;
+    }
+
+    // Range starts AFTER the opening quote so VS Code's filter sees the
+    // partial class name without the leading `"` (otherwise the filter
+    // matches awkwardly and the suggest widget can fail to open while in
+    // a string literal).
+    const replaceStart = ctx.stringStart + 1;
+    let replaceEnd = cursorOffset;
+    if (ctx.stringEnd !== -1) {
+      replaceEnd = ctx.stringEnd + 1;
+      if (
+        ctx.callShape === "parens" &&
+        ctx.closeParen !== -1 &&
+        !ctx.hasPropsAfter
+      ) {
+        replaceEnd = ctx.closeParen + 1;
+      }
+    }
+    const range = new vscode.Range(
+      document.positionAt(replaceStart),
+      document.positionAt(replaceEnd)
+    );
+
+    // Build the trailing chunk that follows the class name in the snippet.
+    // The opening quote stays in the document (it's outside the range), so
+    // the snippet never re-emits it.
+    const q = ctx.quote;
+    const trailing = (() => {
+      if (ctx.hasPropsAfter) {
+        // Just re-emit the closing quote — props table already exists.
+        return q;
+      }
+      if (ctx.callShape === "parens") {
+        return `${q}, {\n\t$1,\n})`;
+      }
+      // Curried form (Fusion / Vide).
+      return `${q} {\n\t$1,\n}`;
+    })();
+
+    return INSERTABLE_CLASS_NAMES.map((name, index) => {
+      const item = new vscode.CompletionItem(
+        name,
+        vscode.CompletionItemKind.Class
+      );
+      item.detail = "Roblox class";
+      item.sortText = String(index).padStart(4, "0");
+      item.filterText = name;
+      item.range = range;
+      item.insertText = new vscode.SnippetString(`${name}${trailing}`);
+      return item;
+    });
+  }
+}
+
+// Synthetic intermediate classes (Instance, GuiBase2d, GuiObject,
+// GuiButton, UILayout) exist in the hierarchy for prop inheritance only —
+// you can't actually pass them as a factory's first arg, so hide them.
+const SYNTHETIC_CLASSES = new Set([
+  "Instance",
+  "GuiBase2d",
+  "GuiObject",
+  "GuiButton",
+  "UILayout",
+]);
+
+const INSERTABLE_CLASS_NAMES = Object.keys(defaultPropsMap)
+  .filter((name) => !SYNTHETIC_CLASSES.has(name))
+  .sort();
 
 // ============================================================================
 // Annotation completion — `---@extends X` and `---@prop NAME Type`

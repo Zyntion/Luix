@@ -2,7 +2,7 @@
   "name": "luix-roblox",
   "displayName": "Luix Roblox",
   "description": "All-in-one Roblox UI authoring helper for React-Luau, Fusion, Vide, and Roact — prop completions, hover docs, inlay hints, color preview, deprecation diagnostics, and more.",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "publisher": "ericplane",
   "icon": "assets/icon.png",
   "author": {
@@ -421,6 +421,22 @@
           "type": "boolean",
           "default": false,
           "markdownDescription": "Suppress the one-time information message shown when Luix detects legacy `reactLuauPropsHelper.*` settings still in use. The settings continue to work either way; this just silences the prompt."
+        }
+      }
+    },
+    "configurationDefaults": {
+      "[lua]": {
+        "editor.quickSuggestions": {
+          "other": "on",
+          "comments": "off",
+          "strings": "on"
+        }
+      },
+      "[luau]": {
+        "editor.quickSuggestions": {
+          "other": "on",
+          "comments": "off",
+          "strings": "on"
         }
       }
     }

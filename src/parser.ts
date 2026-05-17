@@ -379,6 +379,181 @@ export function findEnclosingPropsCall(
 }
 
 // ============================================================================
+// findEnclosingFactoryStringArg — cursor inside the class-name string literal
+// ============================================================================
+
+export interface EnclosingStringArg {
+  alias: string;
+  callShape: "parens" | "curried";
+  quote: '"' | "'";
+  /** Offset of the opening quote in the document. */
+  stringStart: number;
+  /** Offset of the closing quote, or -1 if not present on the same line. */
+  stringEnd: number;
+  /**
+   * For parens form: offset of the closing `)` immediately after the
+   * string (skipping whitespace), or -1 if there's content between (i.e. a
+   * `,` and a props table is already present).
+   */
+  closeParen: number;
+  /**
+   * Whether a props table (`{ … }`) already follows the string. If true,
+   * inserting the suggestion should NOT add another `{ … }`.
+   */
+  hasPropsAfter: boolean;
+}
+
+/**
+ * If the cursor sits inside a quoted string that is the first argument of
+ * an enabled factory call (`e("Fr|"`, `New "Fr|"`, etc.), return the call
+ * context — used by the class-name completion provider.
+ */
+export function findEnclosingFactoryStringArg(
+  text: string,
+  cursorIndex: number,
+  aliases: AliasPartition | string[]
+): EnclosingStringArg | undefined {
+  const partition = asPartition(aliases);
+  if (partition.parens.length === 0 && partition.curried.length === 0) {
+    return undefined;
+  }
+
+  // Walk back from cursor to find the opening quote on the same line.
+  let stringStart = -1;
+  let quote: '"' | "'" | undefined;
+  for (let i = cursorIndex - 1; i >= 0; i--) {
+    const c = text[i];
+    if (c === "\n") {
+      return undefined;
+    }
+    if (c === '"' || c === "'") {
+      let backslashes = 0;
+      let j = i - 1;
+      while (j >= 0 && text[j] === "\\") {
+        backslashes++;
+        j--;
+      }
+      if (backslashes % 2 === 0) {
+        stringStart = i;
+        quote = c;
+        break;
+      }
+    }
+  }
+  if (stringStart === -1 || !quote) {
+    return undefined;
+  }
+
+  // The string contents up to the cursor must be a valid (partial)
+  // identifier — i.e. only `[A-Za-z0-9_]`. Otherwise this isn't a class
+  // name (could be a path, message, etc.).
+  for (let i = stringStart + 1; i < cursorIndex; i++) {
+    const c = text[i];
+    if (!/[A-Za-z0-9_]/.test(c)) {
+      return undefined;
+    }
+  }
+
+  // Find the closing quote, if any, on the same line.
+  let stringEnd = -1;
+  for (let i = cursorIndex; i < text.length; i++) {
+    const c = text[i];
+    if (c === "\n") {
+      break;
+    }
+    if (c === quote) {
+      let backslashes = 0;
+      let j = i - 1;
+      while (j >= 0 && text[j] === "\\") {
+        backslashes++;
+        j--;
+      }
+      if (backslashes % 2 === 0) {
+        stringEnd = i;
+        break;
+      }
+    }
+    if (!/[A-Za-z0-9_]/.test(c)) {
+      // Non-identifier char between cursor and end of line means the string
+      // already has unexpected content — bail.
+      return undefined;
+    }
+  }
+
+  // Look back from the opening quote to identify the factory alias.
+  const beforeSliceStart = Math.max(0, stringStart - 200);
+  const before = text.slice(beforeSliceStart, stringStart);
+
+  let alias: string | undefined;
+  let callShape: "parens" | "curried" | undefined;
+
+  if (partition.parens.length > 0) {
+    const aliasPattern = buildAliasAlternation(partition.parens);
+    const pattern = new RegExp(
+      `(?:^|[^A-Za-z0-9_.])(${aliasPattern})\\s*\\(\\s*$`
+    );
+    const m = pattern.exec(before);
+    if (m) {
+      alias = m[1];
+      callShape = "parens";
+    }
+  }
+  if (!alias && partition.curried.length > 0) {
+    const aliasPattern = buildAliasAlternation(partition.curried);
+    const pattern = new RegExp(
+      `(?:^|[^A-Za-z0-9_.])(${aliasPattern})\\s+$`
+    );
+    const m = pattern.exec(before);
+    if (m) {
+      alias = m[1];
+      callShape = "curried";
+    }
+  }
+  if (!alias || !callShape) {
+    return undefined;
+  }
+
+  // Inspect what follows the closing quote (if present) on the same line.
+  let closeParen = -1;
+  let hasPropsAfter = false;
+  if (stringEnd !== -1) {
+    let i = stringEnd + 1;
+    while (i < text.length && text[i] !== "\n" && /[ \t]/.test(text[i])) {
+      i++;
+    }
+    if (callShape === "parens") {
+      if (text[i] === ",") {
+        // Already has a comma → props table likely already present.
+        let j = i + 1;
+        while (j < text.length && text[j] !== "\n" && /[ \t]/.test(text[j])) {
+          j++;
+        }
+        if (text[j] === "{") {
+          hasPropsAfter = true;
+        }
+      } else if (text[i] === ")") {
+        closeParen = i;
+      }
+    } else {
+      // curried
+      if (text[i] === "{") {
+        hasPropsAfter = true;
+      }
+    }
+  }
+
+  return {
+    alias,
+    callShape,
+    quote,
+    stringStart,
+    stringEnd,
+    closeParen,
+    hasPropsAfter,
+  };
+}
+
+// ============================================================================
 // Component scanning (function definitions + annotations + type aliases)
 // ============================================================================
 

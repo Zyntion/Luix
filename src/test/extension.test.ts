@@ -2,6 +2,7 @@ import * as assert from "assert";
 import * as vscode from "vscode";
 import {
   buildCodeMask,
+  findEnclosingFactoryStringArg,
   findEnclosingPropsCall,
   extractTypeFields,
   parseAnnotationsForComponent,
@@ -1168,5 +1169,87 @@ suite("Scaffold templates produce parseable components", () => {
     }).get("MyCard");
     assert.ok(info, "scanDocument should find MyCard");
     assert.strictEqual(info?.detectedBase, "Frame");
+  });
+});
+
+suite("findEnclosingFactoryStringArg", () => {
+  function detectArg(text: string, partition = ALL_PARTITION) {
+    const cursor = text.indexOf("|");
+    assert.notStrictEqual(cursor, -1);
+    const stripped = text.replace("|", "");
+    return findEnclosingFactoryStringArg(stripped, cursor, partition);
+  }
+
+  test("parens form — partial class name with close paren", () => {
+    const r = detectArg(`e("Fr|")`);
+    assert.ok(r);
+    assert.strictEqual(r?.callShape, "parens");
+    assert.strictEqual(r?.alias, "e");
+    assert.strictEqual(r?.quote, '"');
+    assert.notStrictEqual(r?.stringEnd, -1);
+    assert.notStrictEqual(r?.closeParen, -1);
+    assert.strictEqual(r?.hasPropsAfter, false);
+  });
+
+  test("parens form — single quotes work too", () => {
+    const r = detectArg(`e('Fr|')`);
+    assert.ok(r);
+    assert.strictEqual(r?.quote, "'");
+  });
+
+  test("parens form — empty string after open quote", () => {
+    const r = detectArg(`e("|")`);
+    assert.ok(r);
+    assert.strictEqual(r?.callShape, "parens");
+  });
+
+  test("parens form — recognises existing props table", () => {
+    const r = detectArg(`e("Fr|", { Size = 1 })`);
+    assert.ok(r);
+    assert.strictEqual(r?.hasPropsAfter, true);
+    assert.strictEqual(r?.closeParen, -1);
+  });
+
+  test("parens form — Roact.createElement", () => {
+    const r = detectArg(`Roact.createElement("Fr|")`);
+    assert.ok(r);
+    assert.strictEqual(r?.callShape, "parens");
+    assert.strictEqual(r?.alias, "Roact.createElement");
+  });
+
+  test("curried form — Fusion New", () => {
+    const r = detectArg(`New "Fr|"`);
+    assert.ok(r);
+    assert.strictEqual(r?.callShape, "curried");
+    assert.strictEqual(r?.alias, "New");
+    assert.strictEqual(r?.hasPropsAfter, false);
+  });
+
+  test("curried form — Vide create with existing props", () => {
+    const r = detectArg(`create "Fr|" { Text = "x" }`);
+    assert.ok(r);
+    assert.strictEqual(r?.callShape, "curried");
+    assert.strictEqual(r?.hasPropsAfter, true);
+  });
+
+  test("ignores strings outside a factory call", () => {
+    const r = detectArg(`print("Fr|")`);
+    assert.strictEqual(r, undefined);
+  });
+
+  test("ignores prior strings on the same line", () => {
+    const r = detectArg(`local x = "hello"; e("Fr|")`);
+    assert.ok(r);
+    assert.strictEqual(r?.alias, "e");
+  });
+
+  test("rejects non-identifier content inside the string", () => {
+    const r = detectArg(`e("path/to|")`);
+    assert.strictEqual(r, undefined);
+  });
+
+  test("ignores cursors inside non-first arguments", () => {
+    const r = detectArg(`e("Frame", "Fr|")`);
+    assert.strictEqual(r, undefined);
   });
 });
