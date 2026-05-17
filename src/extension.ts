@@ -13,10 +13,22 @@ import {
 import { DiagnosticsManager } from "./diagnostics";
 import {
   AutoImportCodeActionProvider,
+  Color3ConvertCodeActionProvider,
   DeprecationCodeActionProvider,
+  UDim2ConvertCodeActionProvider,
+  WrapInCodeActionProvider,
   buildRelativePath,
   resolveViaAlias,
 } from "./codeActions";
+import { AnchorPresetCompletionProvider } from "./anchorPresets";
+import { ComponentReferencesLensProvider } from "./codeLens";
+import { extractToComponentCommand } from "./extractComponent";
+import { ImageGutterDecorator } from "./imageGutter";
+import {
+  getCacheStats,
+  getThumbnailCacheDir,
+  purgeAllThumbnails,
+} from "./assetThumbnails";
 import { WorkspaceIndex } from "./workspaceIndex";
 import {
   DEFAULT_ALIASES,
@@ -32,6 +44,16 @@ import {
 } from "./data";
 import { collectLocalBindings } from "./parser";
 import { PaletteCompletionProvider } from "./palette";
+import {
+  RichTextColorProvider,
+  RichTextCompletionProvider,
+  registerRichTextAutoClose,
+} from "./richText";
+import {
+  RobloxGlyphCompletionProvider,
+  RobloxGlyphHoverProvider,
+  RobloxGlyphInlayHintsProvider,
+} from "./robloxGlyphs";
 import {
   ComponentsTreeProvider,
   WorkspaceTreeProvider,
@@ -96,9 +118,14 @@ export function activate(context: vscode.ExtensionContext) {
     )
   );
 
-  // Hover docs — prop type, inherited-from class, Roblox docs link.
+  // Hover docs — prop type, inherited-from class, Roblox docs link; also
+  // surfaces a "what is this custom component?" tooltip on the class slot
+  // of `e(MyButton, …)` style calls.
   context.subscriptions.push(
-    vscode.languages.registerHoverProvider(selector, new PropHoverProvider())
+    vscode.languages.registerHoverProvider(
+      selector,
+      new PropHoverProvider(workspaceIndex)
+    )
   );
 
   // Inlay hints — labels at the closing `)` of every multi-line
@@ -142,6 +169,65 @@ export function activate(context: vscode.ExtensionContext) {
       }
     )
   );
+  // Convert Color3 between fromRGB / fromHex / new / fromHSV.
+  context.subscriptions.push(
+    vscode.languages.registerCodeActionsProvider(
+      selector,
+      new Color3ConvertCodeActionProvider(),
+      {
+        providedCodeActionKinds:
+          Color3ConvertCodeActionProvider.providedCodeActionKinds,
+      }
+    )
+  );
+  // Convert UDim2 between new / fromOffset / fromScale.
+  context.subscriptions.push(
+    vscode.languages.registerCodeActionsProvider(
+      selector,
+      new UDim2ConvertCodeActionProvider(),
+      {
+        providedCodeActionKinds:
+          UDim2ConvertCodeActionProvider.providedCodeActionKinds,
+      }
+    )
+  );
+  // Wrap selection in Frame / ScrollingFrame / container w/ UIListLayout.
+  context.subscriptions.push(
+    vscode.languages.registerCodeActionsProvider(
+      selector,
+      new WrapInCodeActionProvider(),
+      {
+        providedCodeActionKinds:
+          WrapInCodeActionProvider.providedCodeActionKinds,
+      }
+    )
+  );
+
+  // `anchor:tl|t|tr|l|c|r|bl|b|br` typed completion inside props tables.
+  // Trigger char `:` overlaps with the Roblox-glyph completion (which only
+  // fires inside strings) — both providers context-check and return
+  // undefined when they aren't relevant.
+  context.subscriptions.push(
+    vscode.languages.registerCompletionItemProvider(
+      selector,
+      new AnchorPresetCompletionProvider(),
+      ":"
+    )
+  );
+
+  // "N references" CodeLens above every component definition.
+  const referencesLens = new ComponentReferencesLensProvider(workspaceIndex);
+  context.subscriptions.push(
+    referencesLens,
+    vscode.languages.registerCodeLensProvider(selector, referencesLens)
+  );
+
+  // Gutter image previews next to `Image = "rbxassetid://..."` lines —
+  // downloads and caches a tiny thumbnail per asset under the
+  // extension's global storage (or `.luix/assetThumbs/` when the user
+  // has opted in to workspace-local caching).
+  const imageGutter = new ImageGutterDecorator(context);
+  context.subscriptions.push(imageGutter);
 
   // Palette completion — triggers on `.` and only fires when the cursor
   // is right after `Color3.`.
@@ -153,8 +239,48 @@ export function activate(context: vscode.ExtensionContext) {
     )
   );
 
+  // RichText completion — `<` inside any single-line string surfaces the
+  // Roblox tag list (`<b>`, `<font ...>`, `<stroke ...>`, …). The snippet
+  // also inserts the matching close tag. Paired with an auto-close handler
+  // so typing the `>` of an opening tag (`<font size="18">`) drops in the
+  // matching `</font>` after the cursor. Both gated by `luix.richText.enabled`.
+  context.subscriptions.push(
+    vscode.languages.registerCompletionItemProvider(
+      selector,
+      new RichTextCompletionProvider(),
+      "<"
+    )
+  );
+  context.subscriptions.push(
+    vscode.languages.registerColorProvider(
+      selector,
+      new RichTextColorProvider()
+    )
+  );
+  registerRichTextAutoClose(context);
+
+  // Roblox private-use-area glyph support — Robux / Premium / Verified /
+  // Roblox Plus render as missing-glyph boxes in VS Code's default fonts.
+  // Inlay hints name each occurrence; the hover gives codepoint + Luau
+  // escape; the `:slug:` completion lets users insert the literal glyph
+  // from inside a string. All gated by `luix.robloxGlyphs.enabled`.
+  const robloxGlyphHints = new RobloxGlyphInlayHintsProvider();
+  context.subscriptions.push(
+    robloxGlyphHints,
+    vscode.languages.registerInlayHintsProvider(selector, robloxGlyphHints),
+    vscode.languages.registerHoverProvider(
+      selector,
+      new RobloxGlyphHoverProvider()
+    ),
+    vscode.languages.registerCompletionItemProvider(
+      selector,
+      new RobloxGlyphCompletionProvider(),
+      ":"
+    )
+  );
+
   // ---- Sidebar (Workspace + Components views) ----
-  const workspaceTreeProvider = new WorkspaceTreeProvider();
+  const workspaceTreeProvider = new WorkspaceTreeProvider(context);
   const componentsTreeProvider = new ComponentsTreeProvider(
     workspaceIndex,
     context
@@ -213,6 +339,82 @@ export function activate(context: vscode.ExtensionContext) {
     ),
     vscode.commands.registerCommand("luix.componentsView.toggleMode", () =>
       componentsTreeProvider.toggleMode()
+    ),
+    vscode.commands.registerCommand(
+      "luix.extractToComponent",
+      extractToComponentCommand
+    ),
+    vscode.commands.registerCommand(
+      "luix.imageGutter.purgeCache",
+      async () => {
+        const { count } = await getCacheStats(context);
+        if (count === 0) {
+          void vscode.window.showInformationMessage(
+            "Luix: image preview cache is already empty."
+          );
+          return;
+        }
+        const choice = await vscode.window.showWarningMessage(
+          `Purge ${count} cached Roblox asset thumbnail${count === 1 ? "" : "s"}? They'll re-download on demand.`,
+          { modal: true },
+          "Purge"
+        );
+        if (choice !== "Purge") return;
+        await purgeAllThumbnails(context);
+        imageGutter.clearAllDecorations();
+        workspaceTreeProvider.refreshCache();
+        void vscode.window.showInformationMessage(
+          "Luix: image preview cache purged."
+        );
+      }
+    ),
+    vscode.commands.registerCommand(
+      "luix.imageGutter.enableFromSidebar",
+      async () => {
+        await vscode.workspace
+          .getConfiguration("luix")
+          .update(
+            "imageGutter.enabled",
+            true,
+            vscode.ConfigurationTarget.Global
+          );
+        // The sidebar entry IS the disclosure — suppress the
+        // post-first-download notification so users don't get the
+        // same message twice.
+        await context.globalState.update(
+          "luix.imageGutter.firstDownloadNotified",
+          true
+        );
+        const choice = await vscode.window.showInformationMessage(
+          "Luix: image gutter previews are now on. Thumbnails download once per asset and live under VS Code's extension storage by default — flip `luix.imageGutter.cacheLocation` to `workspace` if you'd rather they live in `.luix/assetThumbs/` per project.",
+          "Open settings",
+          "Got it"
+        );
+        if (choice === "Open settings") {
+          void vscode.commands.executeCommand(
+            "workbench.action.openSettings",
+            "@ext:ericplane.luix-roblox imageGutter"
+          );
+        }
+      }
+    ),
+    vscode.commands.registerCommand(
+      "luix.imageGutter.openCacheFolder",
+      async () => {
+        const dir = getThumbnailCacheDir(context);
+        try {
+          await vscode.workspace.fs.stat(dir);
+        } catch {
+          void vscode.window.showInformationMessage(
+            `Luix: cache directory \`${dir.fsPath}\` doesn't exist yet — view a file with an asset reference first.`
+          );
+          return;
+        }
+        await vscode.commands.executeCommand(
+          "revealFileInOS",
+          dir
+        );
+      }
     )
   );
 }
@@ -229,6 +431,7 @@ export function deactivate() {}
 export {
   buildCodeMask,
   applyMask,
+  extractPropEntries,
   findEnclosingFactoryStringArg,
   findEnclosingPropsCall,
   extractTypeFields,

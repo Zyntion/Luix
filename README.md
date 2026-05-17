@@ -1,5 +1,9 @@
 # Luix
 
+[![Install — VS Code Marketplace](https://img.shields.io/badge/install-VS%20Code%20Marketplace-007ACC?style=flat-square&logo=visualstudiocode&logoColor=white)](https://marketplace.visualstudio.com/items?itemName=ericplane.luix-roblox)
+[![GitHub stars](https://img.shields.io/github/stars/ericplane/Luix?style=flat-square&logo=github&logoColor=white&color=24292F)](https://github.com/ericplane/Luix/stargazers)
+[![License](https://img.shields.io/badge/license-MIT-3DA639?style=flat-square)](https://github.com/ericplane/Luix/blob/main/LICENSE)
+
 **All-in-one Roblox UI authoring helper for VS Code.** Luix understands
 the call shapes of every popular Roblox UI framework — React-Luau,
 Roact, Fusion, and Vide — and provides one consistent layer of editor
@@ -33,6 +37,62 @@ create "TextLabel" {
 
 — Luix offers the same prop completions, the same hover docs, the same
 color picker, the same inlay hints. **One extension, every framework.**
+
+---
+
+## Highlights
+
+A whirlwind tour of what you get out of the box — full details
+further down.
+
+- **Prop completion** for every Roblox host class, with type-aware
+  value snippets (`BackgroundColor3 = Color3.fromRGB(…)`,
+  `Size = UDim2.new(…)`, etc.). Works inside `e("Frame", { … })`,
+  `New "Frame" { … }`, `create "Frame" { … }`, and Luau backtick
+  template strings.
+- **Class-name completion** the instant you type the opening quote of
+  a factory call — picks the class *and* sets up the props braces.
+- **Anchor preset shortcut** — type `anchor:tl|t|tr|l|c|r|bl|b|br`
+  inside any props table and expand to a paired `AnchorPoint` +
+  `Position`. Plus an *auto-detect* diagnostic that flags
+  `Position = UDim2.fromScale(0.5, …)` without a matching anchor.
+- **RichText support** — typing `<` inside `Text = "…"` opens a tag
+  picker (`<b>`, `<font color="…" size="…">`, `<stroke>`, …), the
+  matching close tag is inserted on accept, attribute completion
+  chains multiple attributes per tag, and the colour picker fires on
+  `color="…"` values. Warns when `RichText = true` is missing.
+- **Roblox custom-glyph display** — Robux / Premium / Verified /
+  Roblox-Plus PUA characters get inlay-hint labels so you can read
+  what each `[]`-box is. Type `:robux:` to insert the literal glyph.
+  Add your own (`:gbp:` → `£`) via `luix.robloxGlyphs.custom`.
+- **Image-asset hover preview** — hover any `"rbxassetid://NNNN"` to
+  see the actual Roblox CDN thumbnail in the tooltip.
+- **Image-asset gutter previews (opt-in)** — once enabled, every
+  asset reference also gets a tiny thumbnail in the gutter. Thumbnails
+  are downloaded once and cached. One-click enable from the Luix
+  sidebar.
+- **Colour picker** for every `Color3.fromRGB/new/fromHex/fromHSV`
+  literal, plus a *convert between forms* code action.
+- **`UDim2` form conversion** — swap between
+  `new` / `fromOffset` / `fromScale` when the value is expressible.
+- **Wrap-in code actions** — wrap any element in a `Frame`,
+  `ScrollingFrame`, or `Frame + UIListLayout`. Framework-aware.
+- **Extract-to-component refactor** — right-click an element tree →
+  pulls it out into a new file with *only the imports it actually
+  uses*, transitively resolved.
+- **`N references` CodeLens** above every component definition.
+  Hover-style component docs on the call site (`e(MyButton, …)` →
+  inferred props + extends chain).
+- **Prop validation diagnostics** — unknown prop on a host class
+  (with did-you-mean), duplicate key, wrong enum type, prop hardcoded
+  in a custom component, missing `AnchorPoint`, missing `RichText`,
+  deprecated `Font = Enum.Font.X`, typo-d `TextColor`.
+- **Workspace-wide component inference** — `e(MyButton, …)` gets prop
+  completions inferred from the component's annotations, typed
+  parameter, root element, or central `luix.props` config — even
+  across files.
+- **Sidebar** — Wally / Rojo / scaffold actions, component browser
+  (tree or flat), and image-cache controls.
 
 ---
 
@@ -74,6 +134,124 @@ get a snippet wired up with tab stops:
 Works identically across all four frameworks. Toggle with
 `luix.typeAwareValues`.
 
+Color3 placeholders honour **`luix.color3.defaultFormat`** — pick
+`fromRGB` (default), `fromHex`, `new`, or `fromHSV` so the inserted
+template matches your house style.
+
+### Anchor preset completion
+
+Type `anchor:` inside any props table and pick one of nine presets:
+
+| Slug | Anchor + Position |
+| --- | --- |
+| `anchor:tl` | top-left `(0, 0)` |
+| `anchor:t` | top `(0.5, 0)` |
+| `anchor:tr` | top-right `(1, 0)` |
+| `anchor:l` | left `(0, 0.5)` |
+| `anchor:c` | centre `(0.5, 0.5)` |
+| `anchor:r` | right `(1, 0.5)` |
+| `anchor:bl` | bottom-left `(0, 1)` |
+| `anchor:b` | bottom `(0.5, 1)` |
+| `anchor:br` | bottom-right `(1, 1)` |
+
+Accepting `anchor:br` expands to:
+
+```lua
+AnchorPoint = Vector2.new(1, 1),
+Position = UDim2.fromScale(1, 1),
+```
+
+Kills the constant AnchorPoint mental math. Pairs with the
+**AnchorPoint auto-detect** diagnostic below — if you write
+`Position = UDim2.fromScale(0.5, 0.5)` first and forget the
+AnchorPoint, Luix flags it with a one-click fix.
+
+### Wrap-in code actions
+
+Cursor anywhere in an element call → 💡 lightbulb offers:
+
+- *Wrap in Frame* — transparent passthrough container.
+- *Wrap in ScrollingFrame* — vertical scroll with `AutomaticCanvasSize`.
+- *Wrap in Frame + UIListLayout* — vertical stack container with sane defaults.
+
+Framework-aware. Emits parens form (`e(...)`) for React/Roact, curried
+form (`New "..." { [Children] = { ... } }`) for Fusion, inline children
+for Vide.
+
+### Extract-to-component refactor
+
+Right-click an element call → **Luix: Extract to component…**
+
+```lua
+-- Before
+local function HomeScreen()
+    return e("Frame", { Size = ... }, {
+        e("Frame", { -- cursor here
+            Size = ...,
+            BackgroundColor3 = ...,
+        }, {
+            e("UICorner", { CornerRadius = UDim.new(0, 8) }),
+            e("TextLabel", { Text = "Welcome" }),
+        })
+    })
+end
+```
+
+```lua
+-- After (HomeScreen.luau)
+local Card = require(script.Parent.Card)
+
+local function HomeScreen()
+    return e("Frame", { Size = ... }, {
+        e(Card, {})
+    })
+end
+```
+
+```lua
+-- After (Card.luau, freshly written)
+local React = require(Packages.react)
+local e = React.createElement
+
+local function Card(props)
+    return e("Frame", {
+        Size = ...,
+        BackgroundColor3 = ...,
+    }, {
+        e("UICorner", { CornerRadius = UDim.new(0, 8) }),
+        e("TextLabel", { Text = "Welcome" }),
+    })
+end
+
+return Card
+```
+
+Imports are pulled across **transitively** — `local e =
+React.createElement` brings `React` along too, so the new file
+compiles immediately. Anything the extracted code *doesn't* use stays
+behind. The new file is written in the same folder as the source; the
+component is invoked as `e(Card, {})` (React/Roact) or `Card {}`
+(Fusion/Vide — which compose components by direct call rather than via
+`New`/`create`).
+
+### Class-name completion inside factory calls
+
+The moment you type `e("`, `Roact.createElement("`, `New "`, `create "`,
+or the Luau backtick form `` e(` ``, Luix opens a class picker:
+
+```lua
+e("Fr|")        --> accept "Frame" → e("Frame", { <cursor> })
+New "Fr|"       --> accept "Frame" → New "Frame" { <cursor> }
+create "Fr|"    --> accept "Frame" → create "Frame" { <cursor> }
+```
+
+When the call has no props table yet, accepting also inserts `, { … }`
+(parens form) or `{ … }` (curried form) with the cursor parked inside
+ready for prop completion. When a props table already exists, accepting
+swaps just the class name. Synthetic intermediate classes (`GuiObject`,
+`UILayout`, …) are hidden — only types you can actually instantiate
+show up.
+
 ### Outline + breadcrumbs
 
 The VS Code Outline panel and breadcrumbs bar reflect the **React tree**
@@ -113,16 +291,176 @@ via `luix.inlayHints.scope`.
 
 ### Color preview
 
-`Color3.fromRGB(R, G, B)` and `Color3.new(R, G, B)` get a swatch in the
-gutter; click it for VS Code's colour picker. The picker offers both
-output formats so you can edit visually and the file stays in whichever
-notation your codebase prefers.
+`Color3.fromRGB(R, G, B)`, `Color3.new(R, G, B)`, `Color3.fromHex("#…")`,
+and `Color3.fromHSV(h, s, v)` all get a swatch in the gutter; click it
+for VS Code's colour picker. The picker surfaces all four constructor
+forms — your existing notation is always offered first so editing
+visually never silently flips your codebase from hex to RGB (or vice
+versa).
+
+Toggle the Color3 picker via **`luix.colorPreview.enabled`** — handy if
+another Roblox-API extension provides its own picker and you'd rather
+not see two. The RichText colour picker (see below) is on a separate
+**`luix.richText.colorPicker`** toggle so you can keep one without the
+other.
+
+### Convert Color3 between formats
+
+Put the cursor on any `Color3.fromRGB(…)`, `Color3.fromHex(…)`,
+`Color3.new(…)`, or `Color3.fromHSV(…)` literal and the lightbulb
+offers:
+
+```
+💡 Convert to `Color3.fromRGB(...)`
+💡 Convert to `Color3.fromHex(...)`
+💡 Convert to `Color3.new(...)`
+💡 Convert to `Color3.fromHSV(...)`
+```
+
+Picks any of the four and the actual colour is preserved.
+
+### Convert UDim2 between forms
+
+Cursor on any `UDim2.new(...)`, `UDim2.fromOffset(...)`, or
+`UDim2.fromScale(...)` literal → lightbulb offers conversion to the
+other two forms — but only when the value is actually expressible. For
+example, `UDim2.new(0.5, 10, 0.5, 5)` won't offer `fromOffset` or
+`fromScale` (it mixes both), but `UDim2.new(0, 100, 0, 50)` will offer
+*Convert to `UDim2.fromOffset(100, 50)`*.
+
+### Image-asset thumbnail in hover
+
+Hover any string of the form `"rbxassetid://NNNN"` to see the actual
+asset image fetched from Roblox's CDN:
+
+```lua
+Image = "rbxassetid://1234567",  -- hover → 150×150 preview of the asset
+```
+
+Catches "did I paste the right ID?" bugs without bouncing into the
+Roblox website. Works on any string literal, not just `Image` props.
+The thumbnail URL is resolved via Roblox's public
+`thumbnails.roblox.com` API and cached per session.
+
+### Image-asset gutter previews (opt-in)
+
+In addition to the hover, every `"rbxassetid://NNNN"` reference can
+get a tiny thumbnail in the gutter next to its line — same pattern as
+`vscode-gutter-preview` for local `.png` files. Each thumbnail is
+downloaded once and persisted to disk; reopens are instant.
+
+**Off by default** because it persists files to disk and changes
+every editor's visual layout. The Luix sidebar shows a one-click
+*Enable image gutter previews* entry while the feature is off; click
+it to flip the setting and see a one-time disclosure of where the
+cache lives.
+
+**Settings:**
+
+- **`luix.imageGutter.enabled`** (default `false`) — toggles the
+  feature. The hover preview keeps working either way.
+- **`luix.imageGutter.cacheLocation`** (default `"global"`) —
+  - `"global"`: cache lives under VS Code's extension storage, shared
+    across every workspace.
+  - `"workspace"`: cache lives at `.luix/assetThumbs/` inside the
+    current workspace, with a `.luix/.gitignore` auto-written so it
+    doesn't leak into commits.
+
+**Sidebar:** once enabled and there's anything cached, the Workspace
+view shows two entries — *"Purge image preview cache"* (with a live
+`N assets — X.X MB` size readout) and *"Open image cache folder"*
+(reveals the cache directory in your OS file manager). Both also
+available via `Cmd+Shift+P` → "Luix:". Purging wipes both the global
+and workspace locations so flipping `cacheLocation` mid-project never
+strands stale files.
 
 ### Hover documentation
 
 Hover any prop name inside an element table to see its type, the class
 it was introduced on (walking the Roblox hierarchy), and a deep link to
 the Roblox reference docs.
+
+Hover a **custom-component name** (`e(MyButton, …)` → hover `MyButton`)
+to see what Luix has inferred about it: its declared props
+(`@prop`/typed param/auto-detected), the base class it extends, and a
+list of forwardable props. Hovering a prop key inside `e(MyButton, …)`
+shows whether the prop is component-defined or inherited from the base
+class.
+
+### RichText support
+
+Typing `<` inside a string literal opens a tag picker for every Roblox
+RichText tag (`<b>`, `<i>`, `<u>`, `<s>`, `<sc>`, `<smallcaps>`,
+`<uppercase>`, `<sub>`, `<sup>`, `<comment>`, `<br/>`, `<font …>`,
+`<stroke …>`, `<mark …>`):
+
+```lua
+Text = "Hello <|"
+              ^-- type `<` to surface the tag list
+```
+
+Accepting includes the matching close tag with the cursor inside:
+
+```lua
+Text = "Hello <font color=\"#FF0000\"><cursor></font>"
+```
+
+Inside an open `<font …>`, `<stroke …>`, or `<mark …>`, an
+attribute-name completion (`color`, `size`, `face`, `family`, `weight`,
+`transparency`, `thickness`, `joins`) fires so you can chain multiple
+attributes the way Roblox supports them:
+
+```lua
+Text = "<font color=\"#FF0000\" size=\"24\" weight=\"Bold\">Hi</font>"
+```
+
+Typing the `>` that closes an opening tag manually auto-inserts the
+matching `</font>`. Inner attribute quotes adapt to whichever outer Lua
+string delimiter you use (`"…"`, `'…'`, or Luau's `` `…` `` template
+strings) so attribute values never need backslash escaping.
+
+`color="…"` values inside `<font>`, `<stroke>`, and `<mark>` get an
+inline colour picker that recognises both `#RRGGBB` and `rgb(R, G, B)`
+forms — the round-trip preserves whichever you wrote.
+
+If `Text = "<font…>…"` references a RichText tag but the same props
+table doesn't also set `RichText = true`, Luix flags it with a warning
+and a *Set `RichText = true`* quick-fix that inserts the line with
+matching indentation. Only fires on string-literal `Text` values, so
+`Text = someVar` stays silent.
+
+Default snippet colour format toggles via
+**`luix.richText.defaultColorFormat`** (`hex` / `rgb`, default `hex`).
+Disable the whole feature via **`luix.richText.enabled`**.
+
+### Roblox custom-glyph support
+
+Roblox's icon set (Robux `U+E002`, Premium `U+E001`, Verified `U+E000`,
+Roblox Plus `U+E003`) lives in the Unicode private-use area — VS Code's
+default fonts render them as `[]` boxes. Luix adds:
+
+- **Inlay-hint labels** next to each occurrence so you can tell which
+  box is which while reading code.
+- **Hover tooltips** with the codepoint and Luau `\u{…}` escape.
+- A **completion**: type `:robux:`, `:premium:`, `:verified:`, or
+  `:roblox-plus:` inside a string and accept to insert the literal
+  glyph.
+
+Add your own keyboard-unreachable shortcuts via
+**`luix.robloxGlyphs.custom`**:
+
+```jsonc
+{
+  "luix.robloxGlyphs.custom": {
+    "gbp":   "£",
+    "euro":  "€",
+    "yen":   "¥",
+    "shrug": "¯\\_(ツ)_/¯"
+  }
+}
+```
+
+Typing `:gbp:` then expands to `£`. Built-in slugs can't be shadowed.
 
 ### Event completion
 
@@ -172,16 +510,43 @@ Four inference signals are checked, listed from least to most explicit:
 > (via `table.clone` or a dictionary-join helper) to make it pass
 > through.
 
-### Deprecation diagnostics + quick fixes
+### Diagnostics + quick fixes
 
 Yellow squigglies, one-click fixes:
+
+**Deprecation** — toggle with `luix.deprecationDiagnostics` (default
+`true`):
 
 - `Font = Enum.Font.GothamBold` → quick-fix replaces with
   `FontFace = Font.fromName("Gotham", Enum.FontWeight.Bold)`.
 - `TextColor = …` (missing the trailing `3`) → quick-fix renames to
   `TextColor3`.
 
-Toggle with `luix.deprecationDiagnostics` (default `true`).
+**Prop validation** — toggle with `luix.propValidation.enabled`
+(default `true`):
+
+- **Unknown property** on a known Roblox class —
+  `e("Frame", { ScrollingDirection = … })` warns *"Unknown property
+  `ScrollingDirection` on `Frame`. Did you mean `Position`?"* with a
+  *Rename to `Position`* quick-fix (Levenshtein-based suggestion).
+- **Duplicate key** in the same props table — `Size = …, Size = …`
+  flags the second assignment as silently overwriting the first.
+- **Wrong enum type** — `BorderMode = Enum.Font.X` warns because
+  `BorderMode` expects `Enum.BorderMode`.
+- **Overridden by component** — passing a prop to a custom component
+  whose root element hardcodes the same prop (and doesn't forward
+  `props.X`) surfaces an Information-level hint that the call-site
+  value won't take effect.
+- **Missing AnchorPoint** — `Position` set to `UDim2.fromScale(0.5, …)`
+  / `(1, …)` / etc. with no `AnchorPoint` flagged with an Info-level
+  *"add `AnchorPoint = Vector2.new(0.5, 0.5)`"* quick-fix. Stops the
+  classic "why isn't my element centred?" bug at the source.
+
+**RichText** (gated by `luix.richText.enabled`):
+
+- `Text = "<font…>"` without `RichText = true` in the same props table
+  warns that the tags will render as literal text, with a *Set
+  `RichText = true`* quick-fix.
 
 ### Auto-import (opt-in)
 
@@ -209,6 +574,15 @@ existing imports.
 
 `"style": "relative"` produces `script.Parent…X` chains based on
 filesystem position; `"style": "alias"` substitutes the prefixes above.
+
+### Reference CodeLens
+
+Every component definition gets an inline `▸ N references` CodeLens
+above it. Click to peek every workspace call site (`e(MyButton, …)` and
+friends) — handy for figuring out blast radius before changing a
+component's props.
+
+Toggle with **`luix.componentReferencesLens.enabled`**.
 
 ### Sidebar (Activity Bar)
 

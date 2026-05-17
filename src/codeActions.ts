@@ -192,10 +192,112 @@ export class DeprecationCodeActionProvider
         actions.push(this.fontFix(document, diag));
       } else if (diag.code === DIAGNOSTIC_CODE.TypoTextColor) {
         actions.push(this.textColorFix(document, diag));
+      } else if (diag.code === DIAGNOSTIC_CODE.UnknownProp) {
+        const fix = this.unknownPropFix(document, diag);
+        if (fix) {
+          actions.push(fix);
+        }
+      } else if (diag.code === DIAGNOSTIC_CODE.MissingRichText) {
+        actions.push(this.missingRichTextFix(document, diag));
+      } else if (diag.code === DIAGNOSTIC_CODE.MissingAnchorPoint) {
+        const fix = this.missingAnchorPointFix(document, diag);
+        if (fix) {
+          actions.push(fix);
+        }
       }
     }
 
     return actions;
+  }
+
+  /**
+   * Insert `AnchorPoint = Vector2.new(x, y),` right above the flagged
+   * Position key, matching its indentation. Coordinates come from the
+   * diagnostic's stashed payload to avoid re-parsing.
+   */
+  private missingAnchorPointFix(
+    document: vscode.TextDocument,
+    diag: vscode.Diagnostic
+  ): vscode.CodeAction | undefined {
+    const payload = (
+      diag as vscode.Diagnostic & {
+        _luixData?: { anchorX: number; anchorY: number };
+      }
+    )._luixData;
+    if (!payload) {
+      return undefined;
+    }
+    const fmt = (n: number) =>
+      Number.isInteger(n) ? n.toString() : n.toString();
+    const value = `Vector2.new(${fmt(payload.anchorX)}, ${fmt(payload.anchorY)})`;
+    const action = new vscode.CodeAction(
+      `Add \`AnchorPoint = ${value}\``,
+      vscode.CodeActionKind.QuickFix
+    );
+    action.diagnostics = [diag];
+    action.isPreferred = true;
+    const line = document.lineAt(diag.range.start.line);
+    const indent = line.text.slice(0, diag.range.start.character);
+    const insertPos = diag.range.start.with({ character: 0 });
+    action.edit = new vscode.WorkspaceEdit();
+    action.edit.insert(
+      document.uri,
+      insertPos,
+      `${indent}AnchorPoint = ${value},\n`
+    );
+    return action;
+  }
+
+  /**
+   * Insert `RichText = true,` right before the `Text` key, picking up
+   * whatever indentation the existing line already uses so the result
+   * formats cleanly.
+   */
+  private missingRichTextFix(
+    document: vscode.TextDocument,
+    diag: vscode.Diagnostic
+  ): vscode.CodeAction {
+    const action = new vscode.CodeAction(
+      "Set `RichText = true`",
+      vscode.CodeActionKind.QuickFix
+    );
+    action.diagnostics = [diag];
+    action.isPreferred = true;
+    const line = document.lineAt(diag.range.start.line);
+    const indent = line.text.slice(0, diag.range.start.character);
+    const insertPos = diag.range.start.with({ character: 0 });
+    action.edit = new vscode.WorkspaceEdit();
+    action.edit.insert(
+      document.uri,
+      insertPos,
+      `${indent}RichText = true,\n`
+    );
+    return action;
+  }
+
+  /**
+   * "Did you mean `Position`?" → replaces the unknown key with the
+   * suggested one. The suggestion is parsed back out of the diagnostic
+   * message so we don't have to recompute Levenshtein here.
+   */
+  private unknownPropFix(
+    document: vscode.TextDocument,
+    diag: vscode.Diagnostic
+  ): vscode.CodeAction | undefined {
+    const m = /Did you mean `([^`]+)`\?/.exec(diag.message);
+    if (!m) {
+      return undefined;
+    }
+    const replacement = m[1];
+    const action = new vscode.CodeAction(
+      `Rename to \`${replacement}\``,
+      vscode.CodeActionKind.QuickFix
+    );
+    action.diagnostics = [diag];
+    action.isPreferred = true;
+    action.edit = new vscode.WorkspaceEdit();
+    action.edit.replace(document.uri, diag.range, replacement);
+    return action;
   }
 
   private fontFix(
@@ -232,4 +334,402 @@ export class DeprecationCodeActionProvider
     action.edit.replace(document.uri, diag.range, "TextColor3");
     return action;
   }
+}
+
+// ============================================================================
+// Convert Color3 between fromRGB / fromHex / new / fromHSV
+// ============================================================================
+
+import {
+  applyMask,
+  buildCodeMask,
+  extractColorLiterals,
+  findAllCreateElementCalls,
+} from "./parser";
+import { getAliasPartition } from "./frameworks";
+import { findFrameworkForAlias } from "./frameworks";
+
+export class Color3ConvertCodeActionProvider
+  implements vscode.CodeActionProvider
+{
+  static readonly providedCodeActionKinds = [
+    vscode.CodeActionKind.RefactorRewrite,
+  ];
+
+  provideCodeActions(
+    document: vscode.TextDocument,
+    range: vscode.Range | vscode.Selection
+  ): vscode.ProviderResult<vscode.CodeAction[]> {
+    const text = document.getText();
+    const masked = applyMask(text, buildCodeMask(text));
+    const literals = extractColorLiterals(masked, text);
+    const cursor = document.offsetAt(range.start);
+
+    const hit = literals.find(
+      (c) => cursor >= c.start && cursor <= c.end
+    );
+    if (!hit) {
+      return undefined;
+    }
+    const originalText = text.slice(hit.start, hit.end);
+    const literalRange = new vscode.Range(
+      document.positionAt(hit.start),
+      document.positionAt(hit.end)
+    );
+
+    const r255 = Math.round(hit.r * 255);
+    const g255 = Math.round(hit.g * 255);
+    const b255 = Math.round(hit.b * 255);
+    const toHex = (n: number) =>
+      n.toString(16).toUpperCase().padStart(2, "0");
+    const hex = `#${toHex(r255)}${toHex(g255)}${toHex(b255)}`;
+    const fmt = (n: number) =>
+      Number.isInteger(n) ? n.toString() : n.toFixed(3);
+    const hsv = rgbToHsv(hit.r, hit.g, hit.b);
+
+    const forms: Array<{ id: string; text: string; label: string }> = [
+      {
+        id: "fromRGB",
+        text: `Color3.fromRGB(${r255}, ${g255}, ${b255})`,
+        label: "Convert to `Color3.fromRGB(...)`",
+      },
+      {
+        id: "fromHex",
+        text: `Color3.fromHex("${hex}")`,
+        label: "Convert to `Color3.fromHex(...)`",
+      },
+      {
+        id: "new",
+        text: `Color3.new(${fmt(hit.r)}, ${fmt(hit.g)}, ${fmt(hit.b)})`,
+        label: "Convert to `Color3.new(...)`",
+      },
+      {
+        id: "fromHSV",
+        text: `Color3.fromHSV(${fmt(hsv.h)}, ${fmt(hsv.s)}, ${fmt(hsv.v)})`,
+        label: "Convert to `Color3.fromHSV(...)`",
+      },
+    ];
+
+    const actions: vscode.CodeAction[] = [];
+    for (const form of forms) {
+      if (originalText === form.text) {
+        continue;
+      }
+      // Skip forms that match the *kind* (so we don't offer `fromRGB`
+      // when the literal already uses fromRGB but with different
+      // whitespace).
+      if (originalText.includes(`Color3.${form.id}`)) {
+        continue;
+      }
+      const action = new vscode.CodeAction(
+        form.label,
+        vscode.CodeActionKind.RefactorRewrite
+      );
+      action.edit = new vscode.WorkspaceEdit();
+      action.edit.replace(document.uri, literalRange, form.text);
+      actions.push(action);
+    }
+    return actions;
+  }
+}
+
+function rgbToHsv(
+  r: number,
+  g: number,
+  b: number
+): { h: number; s: number; v: number } {
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const delta = max - min;
+  let h = 0;
+  if (delta !== 0) {
+    if (max === r) {
+      h = ((g - b) / delta) % 6;
+    } else if (max === g) {
+      h = (b - r) / delta + 2;
+    } else {
+      h = (r - g) / delta + 4;
+    }
+    h /= 6;
+    if (h < 0) h += 1;
+  }
+  const s = max === 0 ? 0 : delta / max;
+  return { h, s, v: max };
+}
+
+// ============================================================================
+// Convert UDim2 between new / fromOffset / fromScale
+// ============================================================================
+
+export class UDim2ConvertCodeActionProvider
+  implements vscode.CodeActionProvider
+{
+  static readonly providedCodeActionKinds = [
+    vscode.CodeActionKind.RefactorRewrite,
+  ];
+
+  provideCodeActions(
+    document: vscode.TextDocument,
+    range: vscode.Range | vscode.Selection
+  ): vscode.ProviderResult<vscode.CodeAction[]> {
+    const text = document.getText();
+    const cursor = document.offsetAt(range.start);
+    // Find UDim2 calls on the cursor's line so we don't scan the
+    // entire document for every code-action request.
+    const lineStart = text.lastIndexOf("\n", cursor - 1) + 1;
+    const lineEnd = text.indexOf("\n", cursor);
+    const slice = text.slice(lineStart, lineEnd === -1 ? text.length : lineEnd);
+
+    const sliceCursor = cursor - lineStart;
+    const re =
+      /UDim2\.(new|fromOffset|fromScale)\s*\(\s*([^()]*?)\s*\)/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(slice)) !== null) {
+      const start = m.index;
+      const end = m.index + m[0].length;
+      if (sliceCursor < start || sliceCursor > end) {
+        continue;
+      }
+      const kind = m[1];
+      const args = m[2]
+        .split(",")
+        .map((s) => s.trim())
+        .map((s) => Number(s));
+      if (args.some((n) => !Number.isFinite(n))) {
+        return undefined;
+      }
+      let xScale: number;
+      let xOffset: number;
+      let yScale: number;
+      let yOffset: number;
+      if (kind === "new") {
+        if (args.length !== 4) return undefined;
+        [xScale, xOffset, yScale, yOffset] = args;
+      } else if (kind === "fromOffset") {
+        if (args.length !== 2) return undefined;
+        [xOffset, yOffset] = args;
+        xScale = 0;
+        yScale = 0;
+      } else {
+        if (args.length !== 2) return undefined;
+        [xScale, yScale] = args;
+        xOffset = 0;
+        yOffset = 0;
+      }
+
+      const literalRange = new vscode.Range(
+        document.positionAt(lineStart + start),
+        document.positionAt(lineStart + end)
+      );
+
+      const forms: Array<{
+        id: string;
+        text: string;
+        label: string;
+        expressible: boolean;
+      }> = [
+        {
+          id: "new",
+          text: `UDim2.new(${fmt(xScale)}, ${fmt(xOffset)}, ${fmt(yScale)}, ${fmt(yOffset)})`,
+          label: "Convert to `UDim2.new(...)`",
+          expressible: true,
+        },
+        {
+          id: "fromOffset",
+          text: `UDim2.fromOffset(${fmt(xOffset)}, ${fmt(yOffset)})`,
+          label: "Convert to `UDim2.fromOffset(...)`",
+          expressible: xScale === 0 && yScale === 0,
+        },
+        {
+          id: "fromScale",
+          text: `UDim2.fromScale(${fmt(xScale)}, ${fmt(yScale)})`,
+          label: "Convert to `UDim2.fromScale(...)`",
+          expressible: xOffset === 0 && yOffset === 0,
+        },
+      ];
+
+      const actions: vscode.CodeAction[] = [];
+      for (const form of forms) {
+        if (form.id === kind || !form.expressible) {
+          continue;
+        }
+        const action = new vscode.CodeAction(
+          form.label,
+          vscode.CodeActionKind.RefactorRewrite
+        );
+        action.edit = new vscode.WorkspaceEdit();
+        action.edit.replace(document.uri, literalRange, form.text);
+        actions.push(action);
+      }
+      return actions;
+    }
+    return undefined;
+  }
+}
+
+function fmt(n: number): string {
+  return Number.isInteger(n) ? n.toString() : n.toString();
+}
+
+// ============================================================================
+// Wrap-in code actions — Frame / ScrollingFrame / Container w/ UIListLayout
+// ============================================================================
+//
+// Pick an element at the cursor and replace it with a wrapper of one of
+// three flavours, keeping the original as the wrapper's only child.
+// Framework-aware — emits parens-form (`e(...)`) or curried-form
+// (`New "..." {...}`, `create "..." {...}`) based on whichever factory
+// the inner element already uses.
+
+type WrapKind = "Frame" | "ScrollingFrame" | "ListContainer";
+
+export class WrapInCodeActionProvider
+  implements vscode.CodeActionProvider
+{
+  static readonly providedCodeActionKinds = [
+    vscode.CodeActionKind.RefactorRewrite,
+  ];
+
+  provideCodeActions(
+    document: vscode.TextDocument,
+    range: vscode.Range | vscode.Selection
+  ): vscode.ProviderResult<vscode.CodeAction[]> {
+    const text = document.getText();
+    const cursor = document.offsetAt(range.start);
+    const aliases = getAliasPartition();
+    const calls = findAllCreateElementCalls(text, aliases);
+    const match = calls.find(
+      (c) => cursor >= c.aliasStart && cursor <= c.fullEnd
+    );
+    if (!match) {
+      return undefined;
+    }
+    // Re-detect framework via the alias text. `findAllCreateElementCalls`
+    // doesn't surface the alias on the call object, so we read it from
+    // the source between aliasStart and the class-name token.
+    const aliasText = text
+      .slice(match.aliasStart, match.classNameStart)
+      .replace(/[\s("]+$/g, "")
+      .trim();
+    const spec = findFrameworkForAlias(aliasText);
+    const curried = spec?.callShape === "curried";
+    const aliasName = aliasText;
+
+    const innerText = text.slice(match.aliasStart, match.fullEnd);
+    const replaceRange = new vscode.Range(
+      document.positionAt(match.aliasStart),
+      document.positionAt(match.fullEnd)
+    );
+    const line = document.lineAt(document.positionAt(match.aliasStart).line);
+    const baseIndent = /^[\s]*/.exec(line.text)?.[0] ?? "";
+    const stepIndent = "\t";
+
+    const indented = indentLines(innerText, baseIndent + stepIndent);
+
+    const actions: vscode.CodeAction[] = [];
+    for (const kind of ["Frame", "ScrollingFrame", "ListContainer"] as WrapKind[]) {
+      const wrapped = renderWrapper(
+        kind,
+        aliasName,
+        curried,
+        spec?.childrenKey,
+        indented,
+        baseIndent,
+        stepIndent
+      );
+      const action = new vscode.CodeAction(
+        wrapTitle(kind),
+        vscode.CodeActionKind.RefactorRewrite
+      );
+      action.edit = new vscode.WorkspaceEdit();
+      action.edit.replace(document.uri, replaceRange, wrapped);
+      actions.push(action);
+    }
+    return actions;
+  }
+}
+
+function wrapTitle(kind: WrapKind): string {
+  switch (kind) {
+    case "Frame":
+      return "Wrap in Frame";
+    case "ScrollingFrame":
+      return "Wrap in ScrollingFrame";
+    case "ListContainer":
+      return "Wrap in Frame + UIListLayout";
+  }
+}
+
+function renderWrapper(
+  kind: WrapKind,
+  alias: string,
+  curried: boolean,
+  childrenKey: string | undefined,
+  inner: string,
+  baseIndent: string,
+  step: string
+): string {
+  const lines: string[] = [];
+  const wrapperClass = kind === "ScrollingFrame" ? "ScrollingFrame" : "Frame";
+  const baseProps: string[] = [
+    `Size = UDim2.fromScale(1, 1),`,
+    `BackgroundTransparency = 1,`,
+    `BorderSizePixel = 0,`,
+  ];
+  if (kind === "ScrollingFrame") {
+    baseProps.push(`CanvasSize = UDim2.new(0, 0, 0, 0),`);
+    baseProps.push(`AutomaticCanvasSize = Enum.AutomaticSize.Y,`);
+    baseProps.push(`ScrollingDirection = Enum.ScrollingDirection.Y,`);
+  }
+  const innerIndent = baseIndent + step;
+  if (curried) {
+    lines.push(`${alias} "${wrapperClass}" {`);
+    for (const p of baseProps) {
+      lines.push(innerIndent + p);
+    }
+    if (kind === "ListContainer") {
+      lines.push(
+        innerIndent + `${alias} "UIListLayout" {`,
+        innerIndent + step + `FillDirection = Enum.FillDirection.Vertical,`,
+        innerIndent + step + `Padding = UDim.new(0, 8),`,
+        innerIndent + step + `SortOrder = Enum.SortOrder.LayoutOrder,`,
+        innerIndent + `},`
+      );
+    }
+    if (childrenKey) {
+      lines.push(innerIndent + `[${childrenKey}] = {`);
+      lines.push(innerIndent + step + inner.trimStart() + ",");
+      lines.push(innerIndent + `},`);
+    } else {
+      // Vide-style inline child.
+      lines.push(innerIndent + inner.trimStart() + ",");
+    }
+    lines.push(baseIndent + `}`);
+  } else {
+    // Parens form (e / React.createElement / Roact.createElement).
+    lines.push(`${alias}("${wrapperClass}", {`);
+    for (const p of baseProps) {
+      lines.push(innerIndent + p);
+    }
+    lines.push(`${baseIndent}}, {`);
+    if (kind === "ListContainer") {
+      lines.push(
+        `${innerIndent}${alias}("UIListLayout", {`,
+        `${innerIndent}${step}FillDirection = Enum.FillDirection.Vertical,`,
+        `${innerIndent}${step}Padding = UDim.new(0, 8),`,
+        `${innerIndent}${step}SortOrder = Enum.SortOrder.LayoutOrder,`,
+        `${innerIndent}}),`
+      );
+    }
+    lines.push(innerIndent + inner.trimStart() + ",");
+    lines.push(`${baseIndent}})`);
+  }
+  return lines.join("\n");
+}
+
+function indentLines(text: string, prefix: string): string {
+  return text
+    .split("\n")
+    .map((line, i) => (i === 0 ? line : prefix + line))
+    .join("\n");
 }

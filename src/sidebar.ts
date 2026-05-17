@@ -2,7 +2,8 @@ import * as vscode from "vscode";
 import { WorkspaceIndex } from "./workspaceIndex";
 import { detectWorkspaceCapabilities } from "./wally";
 import { DocumentComponentInfo } from "./parser";
-import { getConfig } from "./configCompat";
+import { configChangeAffects, getConfig } from "./configCompat";
+import { getCacheStats } from "./assetThumbnails";
 
 // ============================================================================
 // Workspace view — Wally / Rojo / scaffold entries
@@ -23,10 +24,12 @@ export class WorkspaceTreeProvider
   private _onDidChange = new vscode.EventEmitter<void>();
   readonly onDidChangeTreeData: vscode.Event<void> = this._onDidChange.event;
   private capabilities = { hasWally: false, hasRojoProject: false };
+  private cacheStats: { count: number; bytes: number } = { count: 0, bytes: 0 };
   private disposables: vscode.Disposable[] = [];
 
-  constructor() {
+  constructor(private readonly context: vscode.ExtensionContext) {
     void this.refreshCapabilities();
+    void this.refreshCacheStats();
     const watcher = vscode.workspace.createFileSystemWatcher(
       "**/{wally.toml,*.project.json}"
     );
@@ -34,8 +37,24 @@ export class WorkspaceTreeProvider
       watcher,
       watcher.onDidCreate(() => this.refreshCapabilities()),
       watcher.onDidDelete(() => this.refreshCapabilities()),
-      watcher.onDidChange(() => this.refreshCapabilities())
+      watcher.onDidChange(() => this.refreshCapabilities()),
+      vscode.workspace.onDidChangeConfiguration((e) => {
+        if (configChangeAffects(e, "imageGutter")) {
+          void this.refreshCacheStats();
+        }
+      })
     );
+  }
+
+  /** Re-tally the cache size & fire a tree refresh. Called by the
+   *  purge command after a successful wipe. */
+  refreshCache(): void {
+    void this.refreshCacheStats();
+  }
+
+  private async refreshCacheStats(): Promise<void> {
+    this.cacheStats = await getCacheStats(this.context);
+    this._onDidChange.fire();
   }
 
   private async refreshCapabilities(): Promise<void> {
@@ -108,6 +127,43 @@ export class WorkspaceTreeProvider
         groupOrder: 12,
       }
     );
+
+    // Image-gutter entries: a one-click *enable* prompt when the
+    // feature is off (so users can discover it without hunting through
+    // settings), or the purge / open-folder pair when it's on AND
+    // there's a cache to manage.
+    const gutterOn = getConfig<boolean>("imageGutter.enabled", false);
+    if (!gutterOn) {
+      items.push({
+        label: "Enable image gutter previews",
+        description: "downloads asset thumbnails to disk",
+        tooltip:
+          "Show a thumbnail in the gutter next to every `rbxassetid://NNNN` reference. Downloads each asset's preview to disk once — instant on subsequent opens.",
+        iconId: "eye",
+        command: "luix.imageGutter.enableFromSidebar",
+        groupOrder: 20,
+      });
+    } else if (this.cacheStats.count > 0) {
+      items.push(
+        {
+          label: "Purge image preview cache",
+          description: `${this.cacheStats.count} asset${this.cacheStats.count === 1 ? "" : "s"} — ${formatBytes(this.cacheStats.bytes)}`,
+          tooltip:
+            "Delete every cached Roblox asset thumbnail. They'll re-download on demand the next time you view the relevant files.",
+          iconId: "trash",
+          command: "luix.imageGutter.purgeCache",
+          groupOrder: 20,
+        },
+        {
+          label: "Open image cache folder",
+          tooltip:
+            "Reveal the cache directory in your OS file manager.",
+          iconId: "folder-opened",
+          command: "luix.imageGutter.openCacheFolder",
+          groupOrder: 21,
+        }
+      );
+    }
 
     items.sort((a, b) => a.groupOrder - b.groupOrder);
     return items.map((def) => new WorkspaceTreeItem(def));
@@ -373,4 +429,10 @@ function sortFolder(
       sortFolder(child);
     }
   }
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
 }

@@ -1,9 +1,10 @@
 import * as vscode from "vscode";
-import { defaultPropsMap, flattenClassProps } from "./data";
+import { PROP_TYPES, defaultPropsMap, flattenClassProps } from "./data";
 import {
   AliasPartition,
   applyMask,
   buildCodeMask,
+  extractPropEntries,
   findAllCreateElementCalls,
   findEnclosingPropsCall,
   scanDocument,
@@ -19,6 +20,12 @@ export const DIAGNOSTIC_CODE = {
   DeprecatedFont: "rlph.deprecated-font",
   TypoTextColor: "rlph.typo-textcolor",
   MissingImport: "rlph.missing-import",
+  UnknownProp: "luix.unknown-prop",
+  DuplicateProp: "luix.duplicate-prop",
+  WrongEnumType: "luix.wrong-enum-type",
+  OverriddenByComponent: "luix.overridden-by-component",
+  MissingRichText: "luix.missing-richtext",
+  MissingAnchorPoint: "luix.missing-anchorpoint",
 } as const;
 
 export class DiagnosticsManager implements vscode.Disposable {
@@ -45,7 +52,9 @@ export class DiagnosticsManager implements vscode.Disposable {
         if (
           configChangeAffects(e, "warnReservedPropNames") ||
           configChangeAffects(e, "deprecationDiagnostics") ||
-          configChangeAffects(e, "autoImport")
+          configChangeAffects(e, "autoImport") ||
+          configChangeAffects(e, "propValidation") ||
+          configChangeAffects(e, "richText")
         ) {
           this.refreshAllOpenDocuments();
         }
@@ -112,6 +121,12 @@ export class DiagnosticsManager implements vscode.Disposable {
           this.workspaceIndex
         ))
       );
+    }
+    if (getConfig<boolean>("propValidation.enabled", true)) {
+      diagnostics.push(...computePropValidationDiagnostics(text, document));
+    }
+    if (getConfig<boolean>("richText.enabled", true)) {
+      diagnostics.push(...computeMissingRichTextDiagnostics(text, document));
     }
 
     return diagnostics;
@@ -295,4 +310,336 @@ function isOffsetInsideAnyPropsTable(
   aliases: AliasPartition
 ): boolean {
   return findEnclosingPropsCall(text, offset, aliases) !== undefined;
+}
+
+// ============================================================================
+// Prop validation — unknown / duplicate / wrong-enum / overridden-by-component
+// ============================================================================
+
+function computePropValidationDiagnostics(
+  text: string,
+  document: vscode.TextDocument
+): vscode.Diagnostic[] {
+  const out: vscode.Diagnostic[] = [];
+  const aliases = getAliasPartition();
+  const calls = findAllCreateElementCalls(text, aliases);
+  const components = scanDocument(text, aliases);
+
+  for (const call of calls) {
+    if (
+      call.propsBraceStart === undefined ||
+      call.propsBraceEnd === undefined
+    ) {
+      continue;
+    }
+    const bodyStart = call.propsBraceStart + 1;
+    const propsBody = text.slice(bodyStart, call.propsBraceEnd);
+    const entries = extractPropEntries(propsBody);
+    if (entries.length === 0) {
+      continue;
+    }
+
+    // ---- Duplicate keys ----
+    const seen = new Map<string, number>();
+    for (const entry of entries) {
+      const prev = seen.get(entry.key);
+      if (prev !== undefined) {
+        const start = document.positionAt(bodyStart + entry.keyStart);
+        const end = document.positionAt(bodyStart + entry.keyEnd);
+        const d = new vscode.Diagnostic(
+          new vscode.Range(start, end),
+          `Duplicate prop \`${entry.key}\` — the second assignment overwrites the first.`,
+          vscode.DiagnosticSeverity.Warning
+        );
+        d.code = DIAGNOSTIC_CODE.DuplicateProp;
+        d.source = "luix";
+        out.push(d);
+      } else {
+        seen.set(entry.key, entry.keyStart);
+      }
+    }
+
+    // ---- Unknown / wrong-enum (Roblox host class only) ----
+    if (call.isStringLiteralName && defaultPropsMap[call.className]) {
+      const known = new Set(flattenClassProps(call.className));
+      for (const entry of entries) {
+        if (known.has(entry.key)) {
+          // Check enum type, if we know one.
+          const expected = PROP_TYPES[entry.key];
+          if (expected && expected.startsWith("Enum.")) {
+            const valueText = propsBody
+              .slice(entry.valueStart, entry.valueEnd)
+              .trim();
+            const m = /^Enum\.([A-Za-z_]\w*)/.exec(valueText);
+            if (m && `Enum.${m[1]}` !== expected) {
+              const vStart = document.positionAt(bodyStart + entry.valueStart);
+              const vEnd = document.positionAt(bodyStart + entry.valueEnd);
+              const d = new vscode.Diagnostic(
+                new vscode.Range(vStart, vEnd),
+                `\`${call.className}.${entry.key}\` expects \`${expected}\`, got \`Enum.${m[1]}\`.`,
+                vscode.DiagnosticSeverity.Warning
+              );
+              d.code = DIAGNOSTIC_CODE.WrongEnumType;
+              d.source = "luix";
+              out.push(d);
+            }
+          }
+          continue;
+        }
+        // Unknown — but skip framework-special keys.
+        if (isFrameworkSpecialKey(entry.key)) {
+          continue;
+        }
+        const suggestion = closestMatch(entry.key, known);
+        const start = document.positionAt(bodyStart + entry.keyStart);
+        const end = document.positionAt(bodyStart + entry.keyEnd);
+        const msg = suggestion
+          ? `Unknown property \`${entry.key}\` on \`${call.className}\`. Did you mean \`${suggestion}\`?`
+          : `Unknown property \`${entry.key}\` on \`${call.className}\`.`;
+        const d = new vscode.Diagnostic(
+          new vscode.Range(start, end),
+          msg,
+          vscode.DiagnosticSeverity.Warning
+        );
+        d.code = DIAGNOSTIC_CODE.UnknownProp;
+        d.source = "luix";
+        out.push(d);
+      }
+    }
+
+    // ---- Missing AnchorPoint (Position uses scale 0.5 or 1) ----
+    {
+      const posEntry = entries.find((e) => e.key === "Position");
+      const apEntry = entries.find((e) => e.key === "AnchorPoint");
+      if (posEntry && !apEntry) {
+        const value = propsBody
+          .slice(posEntry.valueStart, posEntry.valueEnd)
+          .trim();
+        const detected = detectExtremeScale(value);
+        if (detected) {
+          const start = document.positionAt(bodyStart + posEntry.keyStart);
+          const end = document.positionAt(bodyStart + posEntry.keyEnd);
+          const d = new vscode.Diagnostic(
+            new vscode.Range(start, end),
+            `\`Position\` uses scale ${formatPair(detected)} but no \`AnchorPoint\` is set — the element's top-left will land there instead of its centre/corner. Add \`AnchorPoint = Vector2.new(${formatPair(detected)})\`?`,
+            vscode.DiagnosticSeverity.Information
+          );
+          d.code = DIAGNOSTIC_CODE.MissingAnchorPoint;
+          d.source = "luix";
+          // Stash the suggested AnchorPoint values on the diagnostic so
+          // the quick-fix doesn't have to re-parse the Position value.
+          (d as vscode.Diagnostic & { _luixData?: unknown })._luixData = {
+            anchorX: detected.x,
+            anchorY: detected.y,
+          };
+          out.push(d);
+        }
+      }
+    }
+
+    // ---- Overridden-by-component ----
+    if (!call.isStringLiteralName) {
+      const component = components.get(
+        call.className.split(".").pop() ?? call.className
+      );
+      const hardcoded = component?.hardcodedProps;
+      if (hardcoded && hardcoded.size > 0) {
+        for (const entry of entries) {
+          if (!hardcoded.has(entry.key)) {
+            continue;
+          }
+          const start = document.positionAt(bodyStart + entry.keyStart);
+          const end = document.positionAt(bodyStart + entry.keyEnd);
+          const d = new vscode.Diagnostic(
+            new vscode.Range(start, end),
+            `\`${entry.key}\` is hard-coded inside \`${component.name}\` and won't be overridden by this value.`,
+            vscode.DiagnosticSeverity.Information
+          );
+          d.code = DIAGNOSTIC_CODE.OverriddenByComponent;
+          d.source = "luix";
+          out.push(d);
+        }
+      }
+    }
+  }
+
+  return out;
+}
+
+/**
+ * Inspect a Position RHS expression and return the scale pair if either
+ * channel is `0.5` or `1` — those land the element's top-left at the
+ * centre / far edge, which is almost never what the author meant
+ * without a matching AnchorPoint. Returns undefined for
+ * `UDim2.fromOffset(...)` (no scale at all) and for `(0, 0)` scales
+ * (already aligns with the default AnchorPoint).
+ */
+function detectExtremeScale(
+  value: string
+): { x: number; y: number } | undefined {
+  const e = value.replace(/\s+/g, "");
+  let m = /^UDim2\.fromScale\((-?[\d.]+),(-?[\d.]+)\)$/.exec(e);
+  if (m) {
+    const x = parseFloat(m[1]);
+    const y = parseFloat(m[2]);
+    return looksWorthFlagging(x, y) ? { x, y } : undefined;
+  }
+  m = /^UDim2\.new\((-?[\d.]+),(-?[\d.]+),(-?[\d.]+),(-?[\d.]+)\)$/.exec(e);
+  if (m) {
+    const x = parseFloat(m[1]);
+    const y = parseFloat(m[3]);
+    return looksWorthFlagging(x, y) ? { x, y } : undefined;
+  }
+  return undefined;
+}
+
+function looksWorthFlagging(x: number, y: number): boolean {
+  const isExtreme = (n: number) => n === 0.5 || n === 1;
+  return isExtreme(x) || isExtreme(y);
+}
+
+function formatPair(p: { x: number; y: number }): string {
+  const fmt = (n: number) =>
+    Number.isInteger(n) ? n.toString() : n.toString();
+  return `${fmt(p.x)}, ${fmt(p.y)}`;
+}
+
+/**
+ * Keys that aren't real Roblox properties but appear in framework
+ * idioms — `[Children]`, `[React.Event.X]`, `[React.Change.X]`, etc.
+ * These show up as positional `[expr] = …` entries in the props table
+ * (already filtered out by `extractPropEntries`), but identifier-shaped
+ * keys like `Children` (Fusion's bare-name form) need an explicit pass.
+ */
+function isFrameworkSpecialKey(key: string): boolean {
+  return key === "Children" || key === "key" || key === "ref";
+}
+
+/**
+ * Levenshtein distance with an early exit. Returns the prop name that
+ * differs from `input` by at most `max` edits, or undefined if no
+ * candidate is close enough.
+ */
+function closestMatch(
+  input: string,
+  candidates: Set<string>
+): string | undefined {
+  let best: string | undefined;
+  let bestDist = Math.min(3, Math.floor(input.length / 2) + 1);
+  for (const c of candidates) {
+    if (Math.abs(c.length - input.length) > bestDist) {
+      continue;
+    }
+    const d = levenshtein(input, c, bestDist);
+    if (d < bestDist) {
+      bestDist = d;
+      best = c;
+    }
+  }
+  return best;
+}
+
+function levenshtein(a: string, b: string, limit: number): number {
+  const m = a.length;
+  const n = b.length;
+  if (Math.abs(m - n) > limit) {
+    return limit + 1;
+  }
+  let prev = new Array<number>(n + 1);
+  let curr = new Array<number>(n + 1);
+  for (let j = 0; j <= n; j++) {
+    prev[j] = j;
+  }
+  for (let i = 1; i <= m; i++) {
+    curr[0] = i;
+    let rowMin = curr[0];
+    const ca = a.charCodeAt(i - 1);
+    for (let j = 1; j <= n; j++) {
+      const cost = ca === b.charCodeAt(j - 1) ? 0 : 1;
+      curr[j] = Math.min(
+        prev[j] + 1,
+        curr[j - 1] + 1,
+        prev[j - 1] + cost
+      );
+      if (curr[j] < rowMin) {
+        rowMin = curr[j];
+      }
+    }
+    if (rowMin > limit) {
+      return limit + 1;
+    }
+    [prev, curr] = [curr, prev];
+  }
+  return prev[n];
+}
+
+// ============================================================================
+// Missing-RichText warning
+// ============================================================================
+//
+// If a props table sets `Text = "<...rich tags...>"` but the same table
+// doesn't enable `RichText = true`, Roblox renders the tags as literal
+// characters. We catch the obvious cases here so it stops biting people
+// on first paste-from-docs.
+
+const RICH_TEXT_TAG_PATTERN =
+  /<\s*\/?\s*(b|i|u|s|sc|smallcaps|uppercase|sub|sup|comment|br|font|stroke|mark)\b/i;
+
+function computeMissingRichTextDiagnostics(
+  text: string,
+  document: vscode.TextDocument
+): vscode.Diagnostic[] {
+  const out: vscode.Diagnostic[] = [];
+  const aliases = getAliasPartition();
+  const calls = findAllCreateElementCalls(text, aliases);
+  for (const call of calls) {
+    if (
+      call.propsBraceStart === undefined ||
+      call.propsBraceEnd === undefined
+    ) {
+      continue;
+    }
+    const bodyStart = call.propsBraceStart + 1;
+    const propsBody = text.slice(bodyStart, call.propsBraceEnd);
+    const entries = extractPropEntries(propsBody);
+
+    let textEntry: { keyStart: number; keyEnd: number } | undefined;
+    // Suppress the warning whenever `RichText` appears at all — it
+    // might be `true`, a Fusion `Value`, a Vide source, or a `Computed`
+    // expression. We can't statically tell what those resolve to, and a
+    // false positive is worse than a missed catch here.
+    let hasRichTextKey = false;
+    for (const entry of entries) {
+      if (entry.key === "Text") {
+        const value = propsBody
+          .slice(entry.valueStart, entry.valueEnd)
+          .trim();
+        // Only flag string-literal Text values; if Text is a variable
+        // or function call we can't tell what's inside, so stay silent.
+        const isStringLiteral =
+          (value.startsWith('"') && value.endsWith('"')) ||
+          (value.startsWith("'") && value.endsWith("'")) ||
+          (value.startsWith("`") && value.endsWith("`"));
+        if (isStringLiteral && RICH_TEXT_TAG_PATTERN.test(value)) {
+          textEntry = { keyStart: entry.keyStart, keyEnd: entry.keyEnd };
+        }
+      } else if (entry.key === "RichText") {
+        hasRichTextKey = true;
+      }
+    }
+    if (!textEntry || hasRichTextKey) {
+      continue;
+    }
+    const start = document.positionAt(bodyStart + textEntry.keyStart);
+    const end = document.positionAt(bodyStart + textEntry.keyEnd);
+    const d = new vscode.Diagnostic(
+      new vscode.Range(start, end),
+      "`Text` contains RichText tags but `RichText = true` isn't set — Roblox will render the tags as literal characters.",
+      vscode.DiagnosticSeverity.Warning
+    );
+    d.code = DIAGNOSTIC_CODE.MissingRichText;
+    d.source = "luix";
+    out.push(d);
+  }
+  return out;
 }

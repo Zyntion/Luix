@@ -2,6 +2,7 @@ import * as assert from "assert";
 import * as vscode from "vscode";
 import {
   buildCodeMask,
+  extractPropEntries,
   findEnclosingFactoryStringArg,
   findEnclosingPropsCall,
   extractTypeFields,
@@ -1251,5 +1252,75 @@ suite("findEnclosingFactoryStringArg", () => {
   test("ignores cursors inside non-first arguments", () => {
     const r = detectArg(`e("Frame", "Fr|")`);
     assert.strictEqual(r, undefined);
+  });
+
+  test("parens form — Luau backtick template string", () => {
+    const r = detectArg("e(`Fr|`)");
+    assert.ok(r);
+    assert.strictEqual(r?.callShape, "parens");
+    assert.strictEqual(r?.quote, "`");
+  });
+});
+
+suite("extractPropEntries", () => {
+  test("simple key/value pairs", () => {
+    const r = extractPropEntries(
+      `Size = UDim2.fromScale(1, 1), Name = "Outer"`
+    );
+    assert.strictEqual(r.length, 2);
+    assert.strictEqual(r[0].key, "Size");
+    assert.strictEqual(r[1].key, "Name");
+  });
+
+  test("skips computed `[Children] = ...` keys", () => {
+    const r = extractPropEntries(`Name = "x", [Children] = {}, Size = 1`);
+    const keys = r.map((e) => e.key);
+    assert.deepStrictEqual(keys, ["Name", "Size"]);
+  });
+
+  test("nested tables don't leak", () => {
+    const r = extractPropEntries(
+      `Style = { Padding = 4 }, Size = UDim2.new(0, 0, 0, 0)`
+    );
+    assert.deepStrictEqual(
+      r.map((e) => e.key),
+      ["Style", "Size"]
+    );
+  });
+
+  test("trailing comma tolerated", () => {
+    const r = extractPropEntries(`Name = "x",`);
+    assert.strictEqual(r.length, 1);
+    assert.strictEqual(r[0].key, "Name");
+  });
+});
+
+suite("scanDocument — hardcodedProps", () => {
+  test("flags props the component assigns to non-`props` values", () => {
+    const text = `local function Card(props)
+  return e("Frame", {
+    Position = UDim2.new(0, 0, 0, 0),
+    BackgroundColor3 = props.BackgroundColor3,
+    Size = props.Size,
+  })
+end`;
+    const info = scanDocument(text, _internal.DEFAULT_ALIASES).get("Card");
+    assert.ok(info);
+    assert.ok(info?.hardcodedProps);
+    assert.ok(info?.hardcodedProps?.has("Position"));
+    assert.ok(!info?.hardcodedProps?.has("BackgroundColor3"));
+    assert.ok(!info?.hardcodedProps?.has("Size"));
+  });
+
+  test("respects a non-default parameter name", () => {
+    const text = `local function Card(p)
+  return e("Frame", {
+    Position = UDim2.new(0, 0, 0, 0),
+    Size = p.Size,
+  })
+end`;
+    const info = scanDocument(text, _internal.DEFAULT_ALIASES).get("Card");
+    assert.ok(info?.hardcodedProps?.has("Position"));
+    assert.ok(!info?.hardcodedProps?.has("Size"));
   });
 });

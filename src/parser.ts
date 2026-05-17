@@ -26,6 +26,13 @@ export interface DocumentComponentInfo {
   paramTypeFields?: string[];
   annotations: ComponentAnnotations;
   detectedBase?: string;
+  /**
+   * Props the component's root return-element sets to a value that
+   * doesn't textually reference the component's `props` parameter. When
+   * a caller passes one of these keys to `<Component>`, the call-site
+   * value is silently ignored — the diagnostic surface flags it.
+   */
+  hardcodedProps?: Set<string>;
 }
 
 export interface CreateElementCall {
@@ -38,6 +45,11 @@ export interface CreateElementCall {
   classNameEnd: number;
   childrenStart?: number;
   childrenEnd?: number;
+  /** Offset of the opening `{` of the props table, if a literal one is
+   *  present (i.e. not when props is a variable like `Component(SomeProps)`). */
+  propsBraceStart?: number;
+  /** Offset of the matching closing `}` of the props table. */
+  propsBraceEnd?: number;
 }
 
 export interface CallTreeNode {
@@ -385,7 +397,7 @@ export function findEnclosingPropsCall(
 export interface EnclosingStringArg {
   alias: string;
   callShape: "parens" | "curried";
-  quote: '"' | "'";
+  quote: '"' | "'" | "`";
   /** Offset of the opening quote in the document. */
   stringStart: number;
   /** Offset of the closing quote, or -1 if not present on the same line. */
@@ -419,14 +431,16 @@ export function findEnclosingFactoryStringArg(
   }
 
   // Walk back from cursor to find the opening quote on the same line.
+  // Recognises Lua's three string delimiters: `"`, `'`, and Luau's
+  // backtick template strings.
   let stringStart = -1;
-  let quote: '"' | "'" | undefined;
+  let quote: '"' | "'" | "`" | undefined;
   for (let i = cursorIndex - 1; i >= 0; i--) {
     const c = text[i];
     if (c === "\n") {
       return undefined;
     }
-    if (c === '"' || c === "'") {
+    if (c === '"' || c === "'" || c === "`") {
       let backslashes = 0;
       let j = i - 1;
       while (j >= 0 && text[j] === "\\") {
@@ -556,6 +570,113 @@ export function findEnclosingFactoryStringArg(
 // ============================================================================
 // Component scanning (function definitions + annotations + type aliases)
 // ============================================================================
+
+export interface PropEntry {
+  key: string;
+  /** Offsets relative to the body text passed in. */
+  keyStart: number;
+  keyEnd: number;
+  valueStart: number;
+  valueEnd: number;
+}
+
+/**
+ * Extract top-level `Key = value` entries from the body of a Lua table
+ * literal (the text INSIDE the outermost `{...}`, without those braces).
+ *
+ * Skips `[…] = …` computed keys, ignores entries nested inside `{}` or
+ * `()`, tolerates trailing commas, and reports per-entry positions so
+ * callers can map the diagnostic back to the source range.
+ */
+export function extractPropEntries(bodyText: string): PropEntry[] {
+  const masked = applyMask(bodyText, buildCodeMask(bodyText));
+  const out: PropEntry[] = [];
+  let i = 0;
+  while (i < masked.length) {
+    // Skip whitespace + commas/semicolons + comments-stripped-to-space.
+    while (i < masked.length && /[\s,;]/.test(masked[i])) {
+      i++;
+    }
+    if (i >= masked.length) {
+      break;
+    }
+    // Skip `[expr] = value` entries (array-style children, computed keys).
+    if (masked[i] === "[") {
+      let depth = 1;
+      i++;
+      while (i < masked.length && depth > 0) {
+        if (masked[i] === "[") depth++;
+        else if (masked[i] === "]") depth--;
+        i++;
+      }
+      // Skip `= value` for this computed key.
+      while (i < masked.length && /\s/.test(masked[i])) i++;
+      if (masked[i] === "=") {
+        i++;
+        i = skipValueExpression(masked, i);
+      }
+      continue;
+    }
+    if (!/[A-Za-z_]/.test(masked[i])) {
+      // Could be a positional value (Vide inline child, `e(...)`,
+      // `local …` block, etc.). Skip the value expression and move on.
+      i = skipValueExpression(masked, i);
+      continue;
+    }
+    const keyStart = i;
+    while (i < masked.length && /\w/.test(masked[i])) {
+      i++;
+    }
+    const keyEnd = i;
+    const key = masked.slice(keyStart, keyEnd);
+    while (i < masked.length && /\s/.test(masked[i])) {
+      i++;
+    }
+    if (masked[i] !== "=") {
+      // Not a `Key = …` entry — probably a positional value that happens
+      // to start with an identifier (a variable reference). Skip it.
+      continue;
+    }
+    i++;
+    while (i < masked.length && /\s/.test(masked[i])) {
+      i++;
+    }
+    const valueStart = i;
+    i = skipValueExpression(masked, i);
+    out.push({ key, keyStart, keyEnd, valueStart, valueEnd: i });
+  }
+  return out;
+}
+
+function skipValueExpression(masked: string, start: number): number {
+  let i = start;
+  let braceDepth = 0;
+  let parenDepth = 0;
+  let bracketDepth = 0;
+  while (i < masked.length) {
+    const c = masked[i];
+    if (braceDepth === 0 && parenDepth === 0 && bracketDepth === 0) {
+      if (c === "," || c === ";") {
+        return i;
+      }
+    }
+    if (c === "{") braceDepth++;
+    else if (c === "}") {
+      if (braceDepth === 0) return i;
+      braceDepth--;
+    } else if (c === "(") parenDepth++;
+    else if (c === ")") {
+      if (parenDepth === 0) return i;
+      parenDepth--;
+    } else if (c === "[") bracketDepth++;
+    else if (c === "]") {
+      if (bracketDepth === 0) return i;
+      bracketDepth--;
+    }
+    i++;
+  }
+  return i;
+}
 
 /**
  * Extract top-level field names from the body of a Luau type literal.
@@ -807,6 +928,121 @@ export function detectReturnedClass(
   return undefined;
 }
 
+/**
+ * Walk the function body to find the root element returned by the
+ * component, then collect prop keys whose RHS expression doesn't
+ * textually reference the component's `props` parameter. Those are the
+ * props a caller can't actually override.
+ *
+ * Heuristic — purely textual:
+ *   - `Position = UDim2.new(0,0,0,0)`     → hardcoded
+ *   - `Position = props.Position`         → forwarded (skipped)
+ *   - `Position = if X then props.Position else ...`  → has `props`, skipped
+ *   - `Position = pos` where `pos = props.Position` → indirect, *missed*
+ *     (false negative — diagnostic stays quiet, which is the safe call).
+ */
+function computeHardcodedProps(
+  originalText: string,
+  maskedText: string,
+  bodyStart: number,
+  bodyEnd: number,
+  paramName: string | undefined,
+  partition: AliasPartition
+): Set<string> | undefined {
+  const rootCall = findReturnedRootCall(
+    originalText,
+    maskedText,
+    bodyStart,
+    bodyEnd,
+    partition
+  );
+  if (
+    !rootCall ||
+    rootCall.propsBraceStart === undefined ||
+    rootCall.propsBraceEnd === undefined
+  ) {
+    return undefined;
+  }
+
+  const propsBody = originalText.slice(
+    rootCall.propsBraceStart + 1,
+    rootCall.propsBraceEnd
+  );
+  const entries = extractPropEntries(propsBody);
+  if (entries.length === 0) {
+    return undefined;
+  }
+
+  // Word-boundary check against the actual parameter identifier, falling
+  // back to the conventional `props`. Bare `_` (commonly used to ignore
+  // the parameter) is treated as "no forwarding ever happens", so no
+  // hardcoded set is produced — silence beats false positives.
+  const candidate = paramName && paramName !== "_" ? paramName : "props";
+  const re = new RegExp(`\\b${candidate}\\b`);
+
+  const out = new Set<string>();
+  for (const entry of entries) {
+    const valueText = propsBody.slice(entry.valueStart, entry.valueEnd);
+    if (!re.test(valueText)) {
+      out.add(entry.key);
+    }
+  }
+  return out.size > 0 ? out : undefined;
+}
+
+/**
+ * Mirror of `detectReturnedClass`, but returns the matched call's bounds
+ * (alias start, class-name range, props brace range) so a caller can
+ * inspect the root element's props table.
+ */
+function findReturnedRootCall(
+  originalText: string,
+  maskedText: string,
+  bodyStart: number,
+  bodyEnd: number,
+  partition: AliasPartition
+): CreateElementCall | undefined {
+  const allCalls = findAllCreateElementCallsImpl(originalText, partition);
+  const stack: string[] = [];
+  const tokenRe = /\b\w+\b/g;
+  tokenRe.lastIndex = bodyStart;
+  let m: RegExpExecArray | null;
+  while ((m = tokenRe.exec(maskedText)) !== null) {
+    if (m.index >= bodyEnd) {
+      break;
+    }
+    const word = m[0];
+    if (word === "function") {
+      stack.push("fn");
+    } else if (word === "if" || word === "do" || word === "repeat") {
+      stack.push(word);
+    } else if (word === "end" || word === "until") {
+      stack.pop();
+    } else if (word === "return") {
+      const functionDepth = stack.reduce(
+        (n, t) => n + (t === "fn" ? 1 : 0),
+        0
+      );
+      if (functionDepth !== 0) {
+        continue;
+      }
+      // The next call whose alias starts after `return` (skipping
+      // whitespace and an optional `(`) is the returned root element.
+      const after = m.index + word.length;
+      const matched = allCalls.find(
+        (c) =>
+          c.aliasStart >= after &&
+          c.aliasStart < bodyEnd &&
+          /^\s*\(?\s*$/.test(originalText.slice(after, c.aliasStart))
+      );
+      if (matched) {
+        return matched;
+      }
+    }
+  }
+  return undefined;
+}
+
 function collectTypeAliases(maskedText: string): Map<string, string[]> {
   const result = new Map<string, string[]>();
   const re = /\btype\s+([A-Za-z_]\w*)\s*=\s*\{/g;
@@ -828,12 +1064,15 @@ interface FunctionDef {
   name: string;
   defIdx: number;
   paramType?: string;
+  /** Identifier of the first parameter, e.g. `props` in `function MyCard(props)`. */
+  paramName?: string;
   bodyStart: number;
   bodyEnd: number;
 }
 
 interface ParameterListInfo {
   firstParamType?: string;
+  firstParamName?: string;
   paramListEnd: number;
 }
 
@@ -851,6 +1090,10 @@ function parseParameterList(
   const nameStart = i;
   while (i < maskedText.length && /\w/.test(maskedText[i])) {
     i++;
+  }
+  let firstParamName: string | undefined;
+  if (i > nameStart) {
+    firstParamName = maskedText.slice(nameStart, i);
   }
 
   if (i > nameStart) {
@@ -908,7 +1151,7 @@ function parseParameterList(
     } else if (c === ")") {
       depth--;
       if (depth === 0) {
-        return { firstParamType, paramListEnd: i };
+        return { firstParamType, firstParamName, paramListEnd: i };
       }
     }
     i++;
@@ -941,6 +1184,7 @@ function findFunctionDefinitions(maskedText: string): FunctionDef[] {
         name,
         defIdx,
         paramType: sig.firstParamType,
+        paramName: sig.firstParamName,
         bodyStart,
         bodyEnd,
       });
@@ -1008,12 +1252,22 @@ export function scanDocument(
       partition
     );
 
+    const hardcodedProps = computeHardcodedProps(
+      text,
+      masked,
+      def.bodyStart,
+      def.bodyEnd,
+      def.paramName,
+      partition
+    );
+
     components.set(lastSegment, {
       name: lastSegment,
       defLineIndex,
       paramTypeFields,
       annotations,
       detectedBase,
+      hardcodedProps,
     });
   }
 
@@ -1105,6 +1359,22 @@ function findAllCreateElementCallsImpl(
       const nameMatch = /\bName\s*=\s*"([^"\n]*)"/.exec(propsText);
       const nameProp = nameMatch ? nameMatch[1] : undefined;
 
+      let propsBraceStart: number | undefined;
+      let propsBraceEnd: number | undefined;
+      const propsOpenBrace = findFirstChar(
+        masked,
+        "{",
+        argRanges[1].start,
+        argRanges[1].end
+      );
+      if (propsOpenBrace !== -1) {
+        const propsCloseBrace = findMatchingBrace(masked, propsOpenBrace);
+        if (propsCloseBrace !== -1) {
+          propsBraceStart = propsOpenBrace;
+          propsBraceEnd = propsCloseBrace;
+        }
+      }
+
       let childrenStart: number | undefined;
       let childrenEnd: number | undefined;
       if (argRanges.length >= 3) {
@@ -1134,6 +1404,8 @@ function findAllCreateElementCallsImpl(
         classNameEnd: classNameInfo.end,
         childrenStart,
         childrenEnd,
+        propsBraceStart,
+        propsBraceEnd,
       });
     }
   }
@@ -1223,6 +1495,8 @@ function findAllCreateElementCallsImpl(
         classNameEnd,
         childrenStart: openBrace + 1,
         childrenEnd: closeBrace,
+        propsBraceStart: openBrace,
+        propsBraceEnd: closeBrace,
       });
     }
   }
@@ -1369,44 +1643,120 @@ function parseFirstArgClassName(
 // Color literal extraction (for the DocumentColorProvider)
 // ============================================================================
 
-export function extractColorLiterals(maskedText: string): ColorLiteral[] {
+/**
+ * Find every Color3 constructor call — `Color3.fromRGB(...)`,
+ * `Color3.new(...)`, `Color3.fromHex(...)`, `Color3.fromHSV(...)` — and
+ * return the resolved RGB triple (each channel `0..1`).
+ *
+ * Pass `originalText` alongside `maskedText` so we can read the literal
+ * hex string out of `Color3.fromHex("#FFFFFF")` — the masked version
+ * has the string interior blanked out. The parameter is optional for
+ * back-compat with callers that only have the masked text on hand:
+ * fromHex calls won't resolve in that mode (we can't see the hex), but
+ * the other constructors still work.
+ */
+export function extractColorLiterals(
+  maskedText: string,
+  originalText?: string
+): ColorLiteral[] {
   const out: ColorLiteral[] = [];
-  const re = /\bColor3\.(fromRGB|new)\s*\(\s*([^()]+?)\s*\)/g;
+  const re =
+    /\bColor3\.(fromRGB|new|fromHex|fromHSV)\s*\(\s*([^()]*?)\s*\)/g;
   let m: RegExpExecArray | null;
   while ((m = re.exec(maskedText)) !== null) {
     const kind = m[1];
-    const args = m[2].split(",").map((s) => s.trim());
-    if (args.length !== 3) {
-      continue;
-    }
-    const parsed = args.map((s) => Number(s));
-    if (parsed.some((n) => !Number.isFinite(n))) {
-      continue;
-    }
-    let r: number;
-    let g: number;
-    let b: number;
-    if (kind === "fromRGB") {
-      r = parsed[0] / 255;
-      g = parsed[1] / 255;
-      b = parsed[2] / 255;
+    let rgb: { r: number; g: number; b: number } | undefined;
+    if (kind === "fromHex") {
+      if (!originalText) {
+        continue;
+      }
+      // Re-parse the call from the original text so we can see the
+      // string contents (the masked version blanked them out).
+      const callText = originalText.slice(m.index, m.index + m[0].length);
+      const hexMatch = /["']\s*(#?[0-9a-fA-F]{3,8})\s*["']/.exec(callText);
+      if (!hexMatch) {
+        continue;
+      }
+      rgb = parseHex(hexMatch[1]);
+    } else if (kind === "fromHSV") {
+      const args = m[2].split(",").map((s) => Number(s.trim()));
+      if (args.length !== 3 || args.some((n) => !Number.isFinite(n))) {
+        continue;
+      }
+      rgb = hsvToRgb(args[0], args[1], args[2]);
     } else {
-      r = parsed[0];
-      g = parsed[1];
-      b = parsed[2];
+      const args = m[2].split(",").map((s) => Number(s.trim()));
+      if (args.length !== 3 || args.some((n) => !Number.isFinite(n))) {
+        continue;
+      }
+      if (kind === "fromRGB") {
+        rgb = { r: args[0] / 255, g: args[1] / 255, b: args[2] / 255 };
+      } else {
+        rgb = { r: args[0], g: args[1], b: args[2] };
+      }
     }
-    if ([r, g, b].some((n) => n < 0 || n > 1)) {
+    if (!rgb) {
+      continue;
+    }
+    if ([rgb.r, rgb.g, rgb.b].some((n) => n < 0 || n > 1)) {
       continue;
     }
     out.push({
-      r,
-      g,
-      b,
+      r: rgb.r,
+      g: rgb.g,
+      b: rgb.b,
       start: m.index,
       end: m.index + m[0].length,
     });
   }
   return out;
+}
+
+function parseHex(s: string): { r: number; g: number; b: number } | undefined {
+  const hex = s.startsWith("#") ? s.slice(1) : s;
+  if (hex.length === 3) {
+    return {
+      r: parseInt(hex[0] + hex[0], 16) / 255,
+      g: parseInt(hex[1] + hex[1], 16) / 255,
+      b: parseInt(hex[2] + hex[2], 16) / 255,
+    };
+  }
+  if (hex.length === 6) {
+    return {
+      r: parseInt(hex.slice(0, 2), 16) / 255,
+      g: parseInt(hex.slice(2, 4), 16) / 255,
+      b: parseInt(hex.slice(4, 6), 16) / 255,
+    };
+  }
+  return undefined;
+}
+
+function hsvToRgb(
+  h: number,
+  s: number,
+  v: number
+): { r: number; g: number; b: number } {
+  // Roblox's HSV is 0..1 across the board. Standard conversion.
+  const hNorm = ((h % 1) + 1) % 1;
+  const i = Math.floor(hNorm * 6);
+  const f = hNorm * 6 - i;
+  const p = v * (1 - s);
+  const q = v * (1 - f * s);
+  const t = v * (1 - (1 - f) * s);
+  switch (i % 6) {
+    case 0:
+      return { r: v, g: t, b: p };
+    case 1:
+      return { r: q, g: v, b: p };
+    case 2:
+      return { r: p, g: v, b: t };
+    case 3:
+      return { r: p, g: q, b: v };
+    case 4:
+      return { r: t, g: p, b: v };
+    default:
+      return { r: v, g: p, b: q };
+  }
 }
 
 // ============================================================================

@@ -2,7 +2,7 @@
   "name": "luix-roblox",
   "displayName": "Luix Roblox",
   "description": "All-in-one Roblox UI authoring helper for React-Luau, Fusion, Vide, and Roact — prop completions, hover docs, inlay hints, color preview, deprecation diagnostics, and more.",
-  "version": "1.0.1",
+  "version": "1.2.0",
   "publisher": "ericplane",
   "icon": "assets/icon.png",
   "author": {
@@ -163,6 +163,23 @@
         "title": "Luix: Toggle components view (tree / flat)",
         "category": "Luix",
         "icon": "$(list-tree)"
+      },
+      {
+        "command": "luix.extractToComponent",
+        "title": "Luix: Extract to component…",
+        "category": "Luix"
+      },
+      {
+        "command": "luix.imageGutter.purgeCache",
+        "title": "Luix: Purge image preview cache",
+        "category": "Luix",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "luix.imageGutter.openCacheFolder",
+        "title": "Luix: Open image preview cache folder",
+        "category": "Luix",
+        "icon": "$(folder-opened)"
       }
     ],
     "menus": {
@@ -188,6 +205,13 @@
           "command": "luix.newComponentHere",
           "when": "explorerResourceIsFolder",
           "group": "navigation@5"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "luix.extractToComponent",
+          "when": "editorLangId == lua || editorLangId == luau",
+          "group": "1_modification@99"
         }
       ]
     },
@@ -417,10 +441,75 @@
           },
           "markdownDescription": "For `alias` style: map workspace-relative filesystem prefixes to Roblox-style require prefixes. The first matching alias wins."
         },
-        "luix.suppressLegacySettingsWarning": {
+        "luix.richText.enabled": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "When enabled (default), typing `<` inside a string literal surfaces Roblox RichText tags (`<b>`, `<i>`, `<font …>`, `<stroke …>`, `<mark …>`, `<br/>`, …) with snippets that include the matching close tag. Inside an open `<font …>`, `<stroke …>`, or `<mark …>`, attribute completion (`color`, `size`, `face`, `family`, `weight`, `transparency`, `thickness`, `joins`) fires so multiple attributes can be combined. Also auto-inserts `</tag>` when you finish typing an opening tag like `<font size=\"18\">`. Inner attribute quotes adapt to the outer Lua string's quote so they don't need backslash escaping. `color=\"...\"` values in `<font>`, `<stroke>`, and `<mark>` get VS Code's inline colour picker, and a `Text = \"…<font…>…\"` value with no `RichText = true` in the same props table gets a warning. Disable if you don't use RichText or want a quieter completion list inside strings."
+        },
+        "luix.color3.defaultFormat": {
+          "type": "string",
+          "enum": ["fromRGB", "fromHex", "new", "fromHSV"],
+          "enumDescriptions": [
+            "`Color3.fromRGB(255, 255, 255)` — integer 0-255 channels.",
+            "`Color3.fromHex(\"#FFFFFF\")` — hex string.",
+            "`Color3.new(1, 1, 1)` — float 0-1 channels.",
+            "`Color3.fromHSV(0, 0, 1)` — hue/saturation/value, all 0-1."
+          ],
+          "default": "fromRGB",
+          "markdownDescription": "Constructor used when Luix inserts a `Color3` value template for a prop completion (`BackgroundColor3`, `TextColor3`, `BorderColor3`, …). Doesn't affect the colour picker's round-trip — the picker always preserves the form your existing value already uses."
+        },
+        "luix.richText.defaultColorFormat": {
+          "type": "string",
+          "enum": ["hex", "rgb"],
+          "enumDescriptions": [
+            "Default placeholders are written as `#FFFFFF`.",
+            "Default placeholders are written as `rgb(255, 255, 255)`."
+          ],
+          "default": "hex",
+          "markdownDescription": "Format used for the placeholder colour values in RichText snippets — `<font color=\"…\">`, `<stroke color=\"…\">`, `<mark color=\"…\">`. Doesn't affect the colour picker's round-trip — the picker always preserves whichever form your existing value already uses."
+        },
+        "luix.richText.colorPicker": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "When enabled (default), `color=\"…\"` values inside `<font>`, `<stroke>`, and `<mark>` RichText tags get VS Code's inline colour swatch and picker. Independent from `#luix.colorPreview.enabled#` (which controls the `Color3.fromRGB(…)` / `Color3.new(…)` picker) so you can disable the Color3 picker — e.g. to avoid clashing with another Roblox-API extension — while keeping the RichText one."
+        },
+        "luix.robloxGlyphs.enabled": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "When enabled (default), Roblox's private-use-area glyphs — Robux (`U+E002`), Premium (`U+E001`), Verified (`U+E000`), Roblox Plus (`U+E003`) — get an inlay-hint label so you can tell what each `[]`-box represents in your strings, plus a hover with the codepoint and Luau escape. Type `:robux:`, `:premium:`, `:verified:`, or `:roblox-plus:` inside a string to insert the literal glyph."
+        },
+        "luix.robloxGlyphs.custom": {
+          "type": "object",
+          "default": {},
+          "additionalProperties": {
+            "type": "string"
+          },
+          "markdownDescription": "Your own `:slug:` shortcuts for characters your keyboard can't reach. Keys are slugs typed between colons inside a string, values are the literal text inserted on accept. Slugs that collide with the built-in glyphs (`robux`, `premium`, `verified`, `roblox-plus`) are ignored.\n\nExample:\n\n```jsonc\n{\n  \"luix.robloxGlyphs.custom\": {\n    \"gbp\":  \"£\",\n    \"euro\": \"€\",\n    \"yen\":  \"¥\",\n    \"shrug\": \"¯\\\\_(ツ)_/¯\"\n  }\n}\n```\n\nThen typing `:gbp:` inside a string and accepting inserts `£`."
+        },
+        "luix.componentReferencesLens.enabled": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "When enabled (default), each component definition gets a `N references` CodeLens above it. Click to peek every workspace call site of `e(MyButton, …)` style invocations. Disable if CodeLens noise bothers you."
+        },
+        "luix.imageGutter.enabled": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "Suppress the one-time information message shown when Luix detects legacy `reactLuauPropsHelper.*` settings still in use. The settings continue to work either way; this just silences the prompt."
+          "markdownDescription": "When enabled, shows a thumbnail of each `rbxassetid://NNNN` image in the gutter next to its line. Thumbnails are downloaded once per asset and cached to disk (see `#luix.imageGutter.cacheLocation#` for where) — reopening a file is instant. **Off by default** because it persists files to disk; the in-hover preview works either way. The Luix sidebar surfaces a one-click *Enable image gutter previews* entry while this is off."
+        },
+        "luix.imageGutter.cacheLocation": {
+          "type": "string",
+          "enum": ["global", "workspace"],
+          "enumDescriptions": [
+            "VS Code's per-extension global storage (shared across every workspace).",
+            "`.luix/assetThumbs/` inside the current workspace. A `.luix/.gitignore` is auto-written so the cache doesn't leak into commits."
+          ],
+          "default": "global",
+          "markdownDescription": "Where Luix stores downloaded Roblox asset thumbnails for the inline gutter preview.\n\n- **`global`** (default) — shared across every workspace, lives under VS Code's extension storage.\n- **`workspace`** — keeps thumbnails per-project under `.luix/assetThumbs/`. A `.luix/.gitignore` is auto-written.\n\nFlip via Settings or `#luix.imageGutter.cacheLocation#`. The purge button in the Luix sidebar wipes both locations, so switching modes never strands stale files."
+        },
+        "luix.propValidation.enabled": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "When enabled (default), surfaces four prop-table diagnostics:\n\n- **Unknown property** on a known Roblox class (`ScrollingDirection` on a `Frame`), with a *Did you mean?* quick-fix.\n- **Duplicate key** in the same props table (`Size = …, Size = …`).\n- **Wrong enum type** — e.g. `BorderMode = Enum.Font.X` when `BorderMode` expects `Enum.BorderMode`.\n- **Overridden by component** — passing a prop to a custom component (`e(MyCard, { Position = ... })`) when that component hard-codes the same prop in its root element, so the call-site value would be silently ignored. Information-level since the heuristic is purely textual.\n\nDisable to silence all four."
         }
       }
     },

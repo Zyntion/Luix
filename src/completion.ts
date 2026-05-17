@@ -483,12 +483,35 @@ function buildItemsForProps(
   });
 }
 
+/**
+ * Resolve the snippet body for a Color3 value, honouring
+ * `luix.color3.defaultFormat`. Defaults to `fromRGB` so existing
+ * behaviour is preserved.
+ */
+function color3Template(): string {
+  const fmt = getConfig<string>("color3.defaultFormat", "fromRGB");
+  switch (fmt) {
+    case "fromHex":
+      return 'Color3.fromHex("${1:#FFFFFF}")';
+    case "new":
+      return "Color3.new(${1:1}, ${2:1}, ${3:1})";
+    case "fromHSV":
+      return "Color3.fromHSV(${1:0}, ${2:0}, ${3:1})";
+    case "fromRGB":
+    default:
+      return "Color3.fromRGB(${1:255}, ${2:255}, ${3:255})";
+  }
+}
+
 function buildSnippet(
   name: string,
   mode: string,
   propType?: string
 ): vscode.SnippetString {
-  const valueTemplate = propType ? renderTypeSnippet(propType) : undefined;
+  let valueTemplate = propType ? renderTypeSnippet(propType) : undefined;
+  if (propType === "Color3" && valueTemplate) {
+    valueTemplate = color3Template();
+  }
 
   switch (mode) {
     case "name-only":

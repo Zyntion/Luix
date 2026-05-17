@@ -1,7 +1,12 @@
 import * as vscode from "vscode";
 import { configChangeAffects, getConfig } from "./configCompat";
 import { getAliasPartition } from "./frameworks";
-import { scanDocument, DocumentComponentInfo } from "./parser";
+import {
+  CreateElementCall,
+  findAllCreateElementCalls,
+  scanDocument,
+  DocumentComponentInfo,
+} from "./parser";
 
 /**
  * Directories Luix always skips when indexing the workspace. These are
@@ -87,7 +92,13 @@ function looksLikeComponent(info: DocumentComponentInfo): boolean {
 export class WorkspaceIndex implements vscode.Disposable {
   private cache = new Map<
     string,
-    { components: Map<string, DocumentComponentInfo> }
+    {
+      components: Map<string, DocumentComponentInfo>;
+      /** Every component call site in the file, keyed by the last
+       *  segment of the called name (`Components.Button` → `Button`).
+       *  Used by the "N references" CodeLens. */
+      callSites: Map<string, CreateElementCall[]>;
+    }
   >();
   private warmupPromise: Promise<void>;
   private disposables: vscode.Disposable[] = [];
@@ -178,8 +189,22 @@ export class WorkspaceIndex implements vscode.Disposable {
 
   private scanDocument(doc: vscode.TextDocument): void {
     const aliases = getAliasPartition();
-    const components = scanDocument(doc.getText(), aliases);
-    this.cache.set(doc.uri.toString(), { components });
+    const text = doc.getText();
+    const components = scanDocument(text, aliases);
+    const callSites = new Map<string, CreateElementCall[]>();
+    for (const call of findAllCreateElementCalls(text, aliases)) {
+      if (call.isStringLiteralName) {
+        continue;
+      }
+      const key = call.className.split(".").pop() ?? call.className;
+      const list = callSites.get(key);
+      if (list) {
+        list.push(call);
+      } else {
+        callSites.set(key, [call]);
+      }
+    }
+    this.cache.set(doc.uri.toString(), { components, callSites });
     this.scheduleChange();
   }
 
@@ -257,13 +282,52 @@ export class WorkspaceIndex implements vscode.Disposable {
   }
 
   /**
+   * Locate every call site of a component across the indexed workspace,
+   * returned as `{ uri, range }` pairs that the CodeLens provider can
+   * surface as references. Self-calls inside the defining file are
+   * included.
+   */
+  async findCallSites(
+    componentName: string
+  ): Promise<Array<{ uri: vscode.Uri; range: vscode.Range }>> {
+    await this.warmupPromise;
+    const key = componentName.split(".").pop() ?? componentName;
+    const out: Array<{ uri: vscode.Uri; range: vscode.Range }> = [];
+    for (const [uriString, entry] of this.cache) {
+      const hits = entry.callSites.get(key);
+      if (!hits) continue;
+      let doc: vscode.TextDocument | undefined;
+      try {
+        doc = await vscode.workspace.openTextDocument(
+          vscode.Uri.parse(uriString)
+        );
+      } catch {
+        continue;
+      }
+      for (const call of hits) {
+        out.push({
+          uri: doc.uri,
+          range: new vscode.Range(
+            doc.positionAt(call.classNameStart),
+            doc.positionAt(call.classNameEnd)
+          ),
+        });
+      }
+    }
+    return out;
+  }
+
+  /**
    * For tests: directly seed the cache with parsed component info.
    */
   _seedForTesting(
     entries: Array<[string, Map<string, DocumentComponentInfo>]>
   ): void {
     for (const [uriString, components] of entries) {
-      this.cache.set(uriString, { components });
+      this.cache.set(uriString, {
+        components,
+        callSites: new Map(),
+      });
     }
     this.warmupPromise = Promise.resolve();
   }
