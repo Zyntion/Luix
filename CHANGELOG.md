@@ -4,6 +4,148 @@ All notable changes to **Luix** will be documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.3.0]
+
+### New diagnostics (gated by `luix.propValidation.enabled`, on by default)
+
+- **Numeric-range warnings** — `Transparency = 1.5`, `Rotation = 720`,
+  `BorderSizePixel = 100`, etc. Per-prop bounds.
+- **TextScaled gotcha** — `TextScaled = true` with a pure-scale `Size`
+  (or no `Size`) collapses text to zero — now flagged with a fix
+  recommendation.
+
+### Color contrast warnings (off by default)
+
+`luix.contrastWarnings.enabled` — flags any `TextColor3` whose
+WCAG-AA contrast ratio against the nearest ancestor's
+`BackgroundColor3` falls below 4.5:1. Both colors must be literal
+Color3 expressions; reactive Fusion/Vide values are skipped.
+
+### Design tokens beyond color
+
+Mirror of `luix.palette` for two more types:
+
+- **`luix.spacing`** — type `UDim.` to surface entries like
+  `spacing.md` → `UDim.new(0, 16)`.
+- **`luix.fonts`** — type `Font.` to surface entries like
+  `fonts.display` → `Font.fromName("Gotham", Enum.FontWeight.Bold)`.
+
+Empty by default; opt-in via user config.
+
+### Color3 → palette extractor
+
+Cursor on any Color3 literal → 💡 *Save Color3 to `luix.palette`…* —
+prompts for a token name and a target (User / Workspace settings).
+The literal is added to `luix.palette` so it surfaces in future
+`Color3.` completions.
+
+### Frame-stats CodeLens (off by default)
+
+`luix.frameStatsLens.enabled` — `▸ Frame — 24 descendants, 4 layers
+deep` above every meaty subtree. `luix.frameStatsLens.minDescendants`
+(default `5`) controls the threshold.
+
+### Workspace-wide validation summary (off by default)
+
+`luix.workspaceValidation.enabled` — the Luix sidebar shows
+*"Project diagnostics — N warnings · M errors across X files"*.
+Click jumps to the Problems panel. Aggregates Luix + every other
+publisher's diagnostics.
+
+### Class picker on `(` (off by default)
+
+`luix.classNameCompletion.triggerOnOpenParen` — typing `e(` (without
+a quote) opens the class picker; accepting inserts the full
+`"ClassName", { … })` body. Off by default because `(` is a broad
+trigger; on saves one keystroke per element when enabled.
+
+### CFrame.Angles snippets
+
+`cfangles` → `CFrame.Angles(math.rad(…), math.rad(…), math.rad(…))`
+`cfanglesrad` → `CFrame.Angles(…, …, …)` (radians form)
+
+### Background — workspace index persistence (on by default)
+
+`luix.indexPersistence.enabled` — the parsed component index is now
+saved to disk between sessions; unchanged files skip re-parsing on
+cold start. Speeds up activation on large workspaces with no
+behavioral difference. Disable to keep Luix offline.
+
+### Background — opt-in Roblox API-dump augmentation
+
+`luix.useRobloxApiDump` — fetch the community-maintained
+Mini-API-Dump JSON once a day and *add* any new properties Roblox has
+shipped to existing classes' completion lists. Additive only — the
+hand-curated built-in data still wins on conflicts.
+
+### Roblox font family + weight autocomplete
+
+- Inside `Font.fromName("…")`, the family dropdown surfaces 36
+  built-in Roblox families with their supported weights. Popular UI
+  families (BuilderSans, Gotham, Roboto, SourceSansPro, …) sort first.
+- After `Enum.FontWeight.` inside a `Font.fromName(...)` call, the
+  weight dropdown shows ONLY the weights the family actually ships.
+  `Font.fromName("Cartoon", Enum.FontWeight.|)` lists just `Regular`;
+  `Font.fromName("Roboto", Enum.FontWeight.|)` lists all nine.
+- **`luix.customFonts`** lets you register custom font families and
+  their supported weights — they merge into the same completions,
+  surface above built-ins, and weight-filter the same way.
+
+### `Font` (deprecated) removed from TextLabel / TextButton / TextBox
+
+These classes no longer suggest the deprecated `Font` property —
+only `FontFace` shows up in the completion list. The existing
+deprecation diagnostic still catches anyone who writes
+`Font = Enum.Font.X` and offers the *Replace with `FontFace = …`*
+quick-fix.
+
+### Smarter value completion for Color3 / UDim / Font props
+
+Accepting `BackgroundColor3` / `TextColor3` / `Padding` / `FontFace`
+now inserts a `Color3.` / `UDim.` / `Font.` prefix and auto-opens
+the suggest dropdown. The dropdown lists:
+
+- **Built-in constructors** first — `fromRGB`, `fromHex`, `new`,
+  `fromHSV` (for Color3); `new` (for UDim); `fromName`, `fromId` (for
+  Font). Picking one inserts the full call with per-channel tab stops
+  preserved.
+- **Tokens defined in your settings** below — `palette.primary`,
+  `spacing.md`, `fonts.display`, … swap the prefix for the literal
+  expression.
+
+Type `f` to filter to constructors; type `p` (or `s` / `fonts`) to
+filter to tokens.
+
+### RichText `<font>` / `<stroke>` / `<mark>` — no more presumptuous defaults
+
+Accepting one of these tags now leaves the attribute slot empty and
+parks the cursor inside the tag. Type any letter and the attribute
+completion fires — pick `color`, `size`, `weight`, etc. and the
+value-with-quote pair fills in. Previously the snippet always
+pre-filled `color="…"` regardless of intent.
+
+### Other improvements
+
+- Prop completion no longer doubles trailing commas: typing `Bac,`
+  then accepting `BackgroundColor3` produces a single trailing comma
+  with the cursor after it, regardless of the existing `,`.
+- Prop / anchor-preset completions are now gated to *key* position —
+  typing `FontFace = Font.|` no longer surfaces `BackgroundColor3` /
+  `anchor:c` / etc. alongside the font constructors.
+- All settings now live under the `luix.*` prefix. The silent
+  fallback to legacy `reactLuauPropsHelper.*` keys has been removed
+  because VS Code's `inspect()` could mistake a user-set `{}` (equal
+  to the default) for "not set" and quietly pick up the old keys.
+  Anyone with stale `reactLuauPropsHelper.*` entries needs to rename
+  them to `luix.*` (the format is identical).
+- All user-visible strings, diagnostic codes, and the diagnostic
+  collection have been re-branded from `react-luau-props-helper` to
+  `luix` so the Problems panel and hover tooltips show the right
+  source.
+- `.vscodeignore` extended to exclude `devforum-post/`, design SVG /
+  PNG drafts, `PUBLISHING.md`, lockfile, and tooling configs.
+  Marketplace package size stays under ~135 KB.
+
 ## [1.2.0]
 
 ### Anchor preset completion
@@ -85,9 +227,9 @@ inferred props, base class, and `---@extends` chain. Hovering a prop
 key inside the call shows whether the prop is component-defined or
 forwarded from the base class.
 
-### Color3 picker now recognises `fromHex` and `fromHSV`
+### Color3 picker now recognizes `fromHex` and `fromHSV`
 
-The colour swatch + picker fires on all four Color3 constructors —
+The color swatch + picker fires on all four Color3 constructors —
 `fromRGB`, `new`, `fromHex`, `fromHSV`. The picker presentation order
 puts your existing notation first so editing visually never silently
 flips your codebase from hex to RGB or vice versa.
@@ -96,7 +238,7 @@ flips your codebase from hex to RGB or vice versa.
 
 Cursor on any Color3 literal → lightbulb offers *Convert to
 `Color3.fromRGB(...)` / `fromHex(...)` / `new(...)` / `fromHSV(...)`*.
-Resolves the actual colour and rewrites the constructor.
+Resolves the actual color and rewrites the constructor.
 
 ### Reference CodeLens
 
@@ -106,9 +248,9 @@ via **`luix.componentReferencesLens.enabled`**.
 
 ## [1.1.1]
 
-### RichText colour picker
+### RichText color picker
 
-VS Code's inline colour swatch + picker now fires on
+VS Code's inline color swatch + picker now fires on
 `color="#FF0000"` and `color="rgb(255, 0, 0)"` values inside `<font>`,
 `<stroke>`, and `<mark>` tags — both forms parse, and editing via the
 picker preserves whichever form you originally wrote (no surprise
@@ -117,7 +259,7 @@ hex↔rgb conversions). Gated by the new **`luix.richText.colorPicker`**
 (`luix.colorPreview.enabled`) for extension-conflict reasons can still
 keep the RichText one.
 
-### Format settings for default colour placeholders
+### Format settings for default color placeholders
 
 - **`luix.color3.defaultFormat`** (default `"fromRGB"`) — pick the
   constructor Luix inserts when accepting a `BackgroundColor3` /
@@ -284,7 +426,7 @@ you're editing the component itself or a file that `require`s it.
 
 ### Color palette
 
-- New setting `luix.palette` — define named project colours. They
+- New setting `luix.palette` — define named project colors. They
   appear as completions when you type `Color3.`. Accepting one replaces
   the prefix with the full configured `Color3.fromRGB(...)` expression,
   so you get design-token consistency without sacrificing greppability.
@@ -298,7 +440,7 @@ you're editing the component itself or a file that `require`s it.
   "ancestors-only" mode so the file stays clean; the labels surface only
   on the chain containing the cursor.
 - **Color preview.** `Color3.fromRGB(...)` and `Color3.new(...)` get a
-  swatch in the gutter plus VS Code's colour picker.
+  swatch in the gutter plus VS Code's color picker.
 - **Hover docs.** Hovering any prop inside an element table shows the
   type, the class it's introduced on, and a deep link to the Roblox
   reference page.

@@ -38,7 +38,7 @@ const TAG_ATTRIBUTES: Record<string, string[]> = {
 };
 
 /**
- * Format a placeholder colour according to the user's preferred form.
+ * Format a placeholder color according to the user's preferred form.
  * Roblox RichText accepts `#RRGGBB` and `rgb(R, G, B)` interchangeably,
  * but everyone has a preference and the snippet defaults should match
  * what the user actually types by hand.
@@ -100,23 +100,28 @@ const RICH_TEXT_TAGS: RichTextTag[] = [
   {
     name: "font",
     detail: "Font styling — color / size / face / weight / transparency",
-    // After the value tab stop ($2), `$3` parks the cursor right before
-    // `>` so the user can type a space and chain more attributes (the
-    // attribute completion fires there). Tab one more time → $0 inside
-    // the tag body.
-    snippet: (aq) =>
-      `<font \${1|color,size,face,family,weight,transparency|}=${aq}\${2}${aq}$3>$0</font>`,
+    // Leave the attribute slot empty and park the cursor inside the
+    // tag — the attribute-name completion provider fires as soon as
+    // the user starts typing, so they pick what they actually need
+    // (`color`, `size`, `weight`, …) instead of getting `color` shoved
+    // in by default. Tab → $0 lands inside the tag body once they're
+    // done with attributes.
+    snippet: () => `<font $1>$0</font>`,
   },
   {
     name: "stroke",
     detail: "Text stroke",
-    snippet: (aq) =>
-      `<stroke color=${aq}\${1:${formatColor(0, 0, 0)}}${aq} thickness=${aq}\${2:1}${aq}$3>$0</stroke>`,
+    // Same approach as `<font>`: empty attribute slot, attribute
+    // completion fires inside the tag so the user picks from
+    // `color`, `thickness`, `transparency`, `joins`.
+    snippet: () => `<stroke $1>$0</stroke>`,
   },
   {
     name: "mark",
     detail: "Highlight background",
-    snippet: (aq) => `<mark color=${aq}\${1:${formatColor(255, 255, 0)}}${aq}$2>$0</mark>`,
+    // Empty attribute slot → attribute completion suggests `color`
+    // and `transparency` on demand.
+    snippet: () => `<mark $1>$0</mark>`,
   },
 ];
 

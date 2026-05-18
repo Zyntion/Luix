@@ -29,3 +29,18 @@ assets/icon.svg
 
 # Previously packaged builds.
 *.vsix
+
+# Local marketing / DevForum drafts (kept out of the published extension).
+devforum-post/**
+devforum-post.md
+devforum-hero.svg
+devforum-hero.png
+PUBLISHING.md
+
+# Tooling configs the marketplace doesn't need.
+.editorconfig
+.prettierrc*
+.eslintrc*
+.eslint*
+package-lock.json
+

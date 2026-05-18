@@ -458,6 +458,48 @@ function rgbToHsv(
 }
 
 // ============================================================================
+// Color3 → luix.palette extractor
+// ============================================================================
+//
+// Cursor on a Color3 literal → *Save to `luix.palette`* code action.
+// Prompts for a token name and writes the literal (in its existing
+// form) to the user's `luix.palette` setting. The token then surfaces
+// in the `Color3.` completion list everywhere — no rewrite of the
+// existing literal itself, since Lua has no runtime `palette` table
+// for `palette.primary` references to resolve through.
+
+export class Color3PaletteExtractorProvider
+  implements vscode.CodeActionProvider
+{
+  static readonly providedCodeActionKinds = [
+    vscode.CodeActionKind.RefactorExtract,
+  ];
+
+  provideCodeActions(
+    document: vscode.TextDocument,
+    range: vscode.Range | vscode.Selection
+  ): vscode.ProviderResult<vscode.CodeAction[]> {
+    const text = document.getText();
+    const masked = applyMask(text, buildCodeMask(text));
+    const literals = extractColorLiterals(masked, text);
+    const cursor = document.offsetAt(range.start);
+    const hit = literals.find((c) => cursor >= c.start && cursor <= c.end);
+    if (!hit) return undefined;
+    const literalText = text.slice(hit.start, hit.end);
+    const action = new vscode.CodeAction(
+      `Save Color3 to \`luix.palette\`…`,
+      vscode.CodeActionKind.RefactorExtract
+    );
+    action.command = {
+      command: "luix.palette.addEntry",
+      title: "Save Color3 to luix.palette",
+      arguments: [literalText],
+    };
+    return [action];
+  }
+}
+
+// ============================================================================
 // Convert UDim2 between new / fromOffset / fromScale
 // ============================================================================
 

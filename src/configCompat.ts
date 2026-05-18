@@ -1,49 +1,32 @@
 import * as vscode from "vscode";
 
-// VS Code config compatibility shim for the rebrand. Settings have moved
-// from `reactLuauPropsHelper.*` to `luix.*`. We still fall back to the
-// legacy prefix silently so any user who hasn't migrated their
-// `settings.json` keeps their behaviour, but the previous nag-on-startup
-// notification has been removed.
+// All settings now live under `luix.*`. The previous rebrand kept a
+// silent fallback to the legacy `reactLuauPropsHelper.*` prefix, but
+// VS Code's `inspect()` returns `globalValue: undefined` when a
+// user-set value happens to equal the package.json default (e.g.
+// `"luix.props": {}`) — which made the fallback override the user's
+// implicit intent in ambiguous cases. The fallback has been removed.
+// Anyone still on the old keys needs to rename them in `settings.json`
+// (or copy the block under `luix.*` instead).
 
 const NEW_PREFIX = "luix";
 const LEGACY_PREFIX = "reactLuauPropsHelper";
 
-/**
- * Get a setting value. Reads `luix.<key>` first; if that key is not
- * *explicitly* set by the user (only the default applies), falls back to
- * `reactLuauPropsHelper.<key>`.
- */
 export function getConfig<T>(key: string, defaultValue: T): T {
-  const newCfg = vscode.workspace.getConfiguration(NEW_PREFIX);
-  const newInspect = newCfg.inspect<T>(key);
-  if (
-    newInspect &&
-    (newInspect.globalValue !== undefined ||
-      newInspect.workspaceValue !== undefined ||
-      newInspect.workspaceFolderValue !== undefined)
-  ) {
-    return newCfg.get<T>(key, defaultValue);
-  }
-
-  const legacyCfg = vscode.workspace.getConfiguration(LEGACY_PREFIX);
-  const legacyInspect = legacyCfg.inspect<T>(key);
-  if (
-    legacyInspect &&
-    (legacyInspect.globalValue !== undefined ||
-      legacyInspect.workspaceValue !== undefined ||
-      legacyInspect.workspaceFolderValue !== undefined)
-  ) {
-    return legacyCfg.get<T>(key, defaultValue);
-  }
-
-  // Neither prefix has an explicit value; use the default we were given.
-  return defaultValue;
+  return vscode.workspace
+    .getConfiguration(NEW_PREFIX)
+    .get<T>(key, defaultValue);
 }
 
 /**
  * Returns true if the given setting *path* (e.g. `inlayHints.enabled`)
- * was changed in either prefix. Useful for `onDidChangeConfiguration`.
+ * was changed under the `luix.*` prefix. Useful for
+ * `onDidChangeConfiguration`.
+ *
+ * The legacy `reactLuauPropsHelper.*` prefix is also checked so the
+ * UI refreshes when a user removes / edits stale entries — even though
+ * we no longer *read* those values, a change there may mean the user
+ * was migrating and added a `luix.*` entry too.
  */
 export function configChangeAffects(
   event: vscode.ConfigurationChangeEvent,

@@ -49,7 +49,9 @@ further down.
   value snippets (`BackgroundColor3 = Color3.fromRGB(…)`,
   `Size = UDim2.new(…)`, etc.). Works inside `e("Frame", { … })`,
   `New "Frame" { … }`, `create "Frame" { … }`, and Luau backtick
-  template strings.
+  template strings. Color3 / UDim / Font props auto-open a suggest
+  dropdown with both built-in constructors *and* your defined
+  `luix.palette` / `luix.spacing` / `luix.fonts` tokens.
 - **Class-name completion** the instant you type the opening quote of
   a factory call — picks the class *and* sets up the props braces.
 - **Anchor preset shortcut** — type `anchor:tl|t|tr|l|c|r|bl|b|br`
@@ -59,7 +61,7 @@ further down.
 - **RichText support** — typing `<` inside `Text = "…"` opens a tag
   picker (`<b>`, `<font color="…" size="…">`, `<stroke>`, …), the
   matching close tag is inserted on accept, attribute completion
-  chains multiple attributes per tag, and the colour picker fires on
+  chains multiple attributes per tag, and the color picker fires on
   `color="…"` values. Warns when `RichText = true` is missing.
 - **Roblox custom-glyph display** — Robux / Premium / Verified /
   Roblox-Plus PUA characters get inlay-hint labels so you can read
@@ -71,7 +73,7 @@ further down.
   asset reference also gets a tiny thumbnail in the gutter. Thumbnails
   are downloaded once and cached. One-click enable from the Luix
   sidebar.
-- **Colour picker** for every `Color3.fromRGB/new/fromHex/fromHSV`
+- **Color picker** for every `Color3.fromRGB/new/fromHex/fromHSV`
   literal, plus a *convert between forms* code action.
 - **`UDim2` form conversion** — swap between
   `new` / `fromOffset` / `fromScale` when the value is expressible.
@@ -86,7 +88,24 @@ further down.
 - **Prop validation diagnostics** — unknown prop on a host class
   (with did-you-mean), duplicate key, wrong enum type, prop hardcoded
   in a custom component, missing `AnchorPoint`, missing `RichText`,
-  deprecated `Font = Enum.Font.X`, typo-d `TextColor`.
+  numeric-range warnings (`Transparency = 1.5`), `TextScaled` gotcha
+  (collapses to zero without a fixed-offset `Size`), deprecated
+  `Font = Enum.Font.X`, typo-d `TextColor`. Optional WCAG-AA
+  **color-contrast** warnings (`luix.contrastWarnings.enabled`).
+- **Design tokens** — `luix.palette` (colors), `luix.spacing` (UDim),
+  `luix.fonts` (Font). Type `Color3.` / `UDim.` / `Font.` to surface
+  your named tokens.
+- **Roblox font catalogue** — typing inside `Font.fromName("…")`
+  surfaces 36 built-in Roblox families with their supported weights;
+  the `Enum.FontWeight.` dropdown then filters to only the weights
+  *that family* actually ships. Custom families via
+  `luix.customFonts`.
+- **Color3 → palette extractor** — cursor on any Color3 literal →
+  *Save to `luix.palette`* code action.
+- **Frame-stats CodeLens** (off by default) — `▸ N descendants, D
+  layers deep` over heavy subtrees so you spot layout bloat.
+- **Project-wide diagnostic summary** (off by default) — sidebar
+  shows `N warnings · M errors across X files`.
 - **Workspace-wide component inference** — `e(MyButton, …)` gets prop
   completions inferred from the component's annotations, typed
   parameter, root element, or central `luix.props` config — even
@@ -105,7 +124,7 @@ further down.
 | **Fusion** | `New "Frame" { … }` | `[Children] = { … }` | `[OnEvent "X"] = fn` |
 | **Vide** | `create "Frame" { … }` | inline in same table | plain props (`X = fn`) |
 
-Toggle which frameworks Luix recognises via `luix.frameworks` (default:
+Toggle which frameworks Luix recognizes via `luix.frameworks` (default:
 all four). Override the factory aliases per-framework via
 `luix.<framework>.aliases` — useful if your codebase aliases the factory
 locally, e.g. `local r = React.createElement` or `local n = Fusion.New`.
@@ -138,6 +157,24 @@ Color3 placeholders honour **`luix.color3.defaultFormat`** — pick
 `fromRGB` (default), `fromHex`, `new`, or `fromHSV` so the inserted
 template matches your house style.
 
+**Two smart-completion behaviors worth knowing about:**
+
+- **Trailing-comma awareness.** If the line already has a `,` after
+  the partial prop name (e.g. you typed `Bac,` then went back to fill
+  it in), the snippet's own comma replaces the existing one rather
+  than doubling it. The cursor still lands cleanly *after* the comma.
+- **Key-position gating.** Prop completions and the `anchor:` preset
+  shortcut only surface in *key* position (start of a new entry).
+  Typing inside a value expression like `FontFace = Font.|` doesn't
+  pollute the dropdown with `BackgroundColor3` / `Size` / etc. —
+  those only show up when you're typing a fresh prop name.
+
+**For Color3 / UDim / Font props specifically**, accepting the prop
+inserts just the namespace prefix and auto-opens the suggest dropdown
+so you can pick a constructor *or* one of your defined tokens —
+covered in the [Design tokens](#design-tokens--color-spacing-fonts)
+section below.
+
 ### Anchor preset completion
 
 Type `anchor:` inside any props table and pick one of nine presets:
@@ -148,7 +185,7 @@ Type `anchor:` inside any props table and pick one of nine presets:
 | `anchor:t` | top `(0.5, 0)` |
 | `anchor:tr` | top-right `(1, 0)` |
 | `anchor:l` | left `(0, 0.5)` |
-| `anchor:c` | centre `(0.5, 0.5)` |
+| `anchor:c` | center `(0.5, 0.5)` |
 | `anchor:r` | right `(1, 0.5)` |
 | `anchor:bl` | bottom-left `(0, 1)` |
 | `anchor:b` | bottom `(0.5, 1)` |
@@ -256,7 +293,7 @@ show up.
 
 The VS Code Outline panel and breadcrumbs bar reflect the **React tree**
 of the current file, not just its Lua function structure. Components
-named via the `Name` prop are labelled with that name. `Cmd+Shift+O`
+named via the `Name` prop are labeled with that name. `Cmd+Shift+O`
 jumps straight to any element by name.
 
 ### Inlay hints at closing brackets
@@ -293,14 +330,14 @@ via `luix.inlayHints.scope`.
 
 `Color3.fromRGB(R, G, B)`, `Color3.new(R, G, B)`, `Color3.fromHex("#…")`,
 and `Color3.fromHSV(h, s, v)` all get a swatch in the gutter; click it
-for VS Code's colour picker. The picker surfaces all four constructor
+for VS Code's color picker. The picker surfaces all four constructor
 forms — your existing notation is always offered first so editing
 visually never silently flips your codebase from hex to RGB (or vice
 versa).
 
 Toggle the Color3 picker via **`luix.colorPreview.enabled`** — handy if
 another Roblox-API extension provides its own picker and you'd rather
-not see two. The RichText colour picker (see below) is on a separate
+not see two. The RichText color picker (see below) is on a separate
 **`luix.richText.colorPicker`** toggle so you can keep one without the
 other.
 
@@ -317,7 +354,7 @@ offers:
 💡 Convert to `Color3.fromHSV(...)`
 ```
 
-Picks any of the four and the actual colour is preserved.
+Picks any of the four and the actual color is preserved.
 
 ### Convert UDim2 between forms
 
@@ -420,7 +457,7 @@ string delimiter you use (`"…"`, `'…'`, or Luau's `` `…` `` template
 strings) so attribute values never need backslash escaping.
 
 `color="…"` values inside `<font>`, `<stroke>`, and `<mark>` get an
-inline colour picker that recognises both `#RRGGBB` and `rgb(R, G, B)`
+inline color picker that recognizes both `#RRGGBB` and `rgb(R, G, B)`
 forms — the round-trip preserves whichever you wrote.
 
 If `Text = "<font…>…"` references a RichText tag but the same props
@@ -429,7 +466,7 @@ and a *Set `RichText = true`* quick-fix that inserts the line with
 matching indentation. Only fires on string-literal `Text` values, so
 `Text = someVar` stays silent.
 
-Default snippet colour format toggles via
+Default snippet color format toggles via
 **`luix.richText.defaultColorFormat`** (`hex` / `rgb`, default `hex`).
 Disable the whole feature via **`luix.richText.enabled`**.
 
@@ -540,7 +577,21 @@ Yellow squigglies, one-click fixes:
 - **Missing AnchorPoint** — `Position` set to `UDim2.fromScale(0.5, …)`
   / `(1, …)` / etc. with no `AnchorPoint` flagged with an Info-level
   *"add `AnchorPoint = Vector2.new(0.5, 0.5)`"* quick-fix. Stops the
-  classic "why isn't my element centred?" bug at the source.
+  classic "why isn't my element centered?" bug at the source.
+- **Numeric-range warnings** — `Transparency = 1.5`,
+  `Rotation = 720`, `BorderSizePixel = 100`, etc. Per-prop bounds.
+- **`TextScaled` gotcha** — `TextScaled = true` with a pure-scale
+  `Size` (or no `Size`) collapses text to zero; flagged with a clear
+  explanation.
+
+**Optional WCAG color-contrast warnings** (`luix.contrastWarnings.enabled`):
+
+- Walks the element tree and flags any `TextColor3` whose contrast
+  ratio against the nearest ancestor's `BackgroundColor3` is below
+  4.5:1 (WCAG-AA for normal text). Off by default because it's strict
+  and can pile up on existing codebases. Both colors must be literal
+  Color3 expressions — reactive Fusion/Vide values are skipped to
+  avoid false positives.
 
 **RichText** (gated by `luix.richText.enabled`):
 
@@ -582,7 +633,36 @@ above it. Click to peek every workspace call site (`e(MyButton, …)` and
 friends) — handy for figuring out blast radius before changing a
 component's props.
 
-Toggle with **`luix.componentReferencesLens.enabled`**.
+Toggle with **`luix.componentReferencesLens.enabled`** (default `true`).
+
+### Frame-stats CodeLens (off by default)
+
+When enabled, every element call gets a `▸ Frame — N descendants, D
+layers deep` CodeLens. Useful for spotting subtrees that have grown
+out of hand (Roblox slows down once you nest too many UI instances).
+
+- **`luix.frameStatsLens.enabled`** (default `false`).
+- **`luix.frameStatsLens.minDescendants`** (default `5`) — only show
+  the lens for elements with at least this many descendants. Stops
+  trivial elements from cluttering the gutter.
+
+### Workspace-wide diagnostic summary (off by default)
+
+When enabled, the Luix sidebar shows a line summarising every
+diagnostic VS Code currently knows about for Lua/Luau files in the
+workspace:
+
+```
+✓ Project diagnostics — 0 warnings across 12 files       (clean)
+⚠ Project diagnostics — 8 warnings across 4 files        (issues)
+✗ Project diagnostics — 2 errors · 5 warnings ...        (errors)
+```
+
+Click to open VS Code's Problems panel. Aggregates Luix's own
+diagnostics plus anything any other extension publishes — useful as a
+"how clean is my project?" gauge during cleanup passes.
+
+Toggle with **`luix.workspaceValidation.enabled`** (default `false`).
 
 ### Sidebar (Activity Bar)
 
@@ -606,7 +686,7 @@ you can watch and interrupt them.
 modes, toggled via the title-bar button:
 
 - **Tree** (default): grouped by folder, mirroring how the files are
-  organised on disk. Click an entry to jump to the function definition.
+  organized on disk. Click an entry to jump to the function definition.
 - **Flat**: alphabetical list of every component.
 
 Only functions Luix is confident are UI components show up here — i.e.
@@ -635,12 +715,46 @@ first.
 
 Both views are also available via `Cmd+Shift+P` → search "Luix:".
 
-### Color palette
+### Design tokens — color, spacing, fonts
 
-Define named project colours via `luix.palette`. They appear as
-completions when you type `Color3.` and the selected entry inserts the
-full configured expression — keeping your design tokens consistent and
-greppable.
+Three central tables let you name design tokens once and surface them
+as completions wherever they're relevant:
+
+| Setting | Triggers after | Suggests entries like |
+| --- | --- | --- |
+| `luix.palette` | `Color3.` | `palette.primary` → `Color3.fromRGB(124, 92, 255)` |
+| `luix.spacing` | `UDim.` | `spacing.md` → `UDim.new(0, 16)` |
+| `luix.fonts` | `Font.` | `fonts.display` → `Font.fromName("Gotham", Enum.FontWeight.Bold)` |
+
+```jsonc
+{
+  "luix.palette": {
+    "primary": "Color3.fromRGB(124, 92, 255)",
+    "surface": "Color3.fromRGB(28, 30, 38)"
+  },
+  "luix.spacing": {
+    "xs": "UDim.new(0, 4)",
+    "sm": "UDim.new(0, 8)",
+    "md": "UDim.new(0, 16)",
+    "lg": "UDim.new(0, 24)"
+  },
+  "luix.fonts": {
+    "display": "Font.fromName(\"Gotham\", Enum.FontWeight.Bold)",
+    "body":    "Font.fromName(\"SourceSansPro\", Enum.FontWeight.Regular)"
+  }
+}
+```
+
+The accepted suggestion replaces the trigger keyword with the literal
+expression, so the on-disk code stays canonical Luau — no runtime
+`palette.primary` references to resolve.
+
+**Save Color3 to palette** — cursor on any `Color3.fromRGB(...)` /
+`fromHex(...)` / `new(...)` / `fromHSV(...)` → 💡 *Save Color3 to
+`luix.palette`…*. Prompts for a name and a target (User / Workspace
+settings); the literal becomes a permanent palette entry. Doesn't
+modify the existing call site — it just makes the color reusable
+going forward.
 
 ```jsonc
 {
@@ -657,13 +771,70 @@ In a Lua file:
 
 ```lua
 BackgroundColor3 = Color3.|     -- typing `.` shows:
+                                --   ── built-in constructors ──
+                                --   fromRGB    Color3 from 0-255 RGB channels
+                                --   fromHex    Color3 from a "#RRGGBB" hex string
+                                --   new        Color3 from 0-1 RGB channels
+                                --   fromHSV    Color3 from 0-1 H/S/V
+                                --   ── palette tokens ──
                                 --   palette.primary
-                                --   palette.background
                                 --   palette.surface
-                                --   palette.text
--- accepting `palette.surface` replaces `Color3.` with the full
+                                --   …
+-- Picking a constructor (e.g. `fromRGB`) inserts the full call with
+-- per-channel tab stops so you can quickly type 124, 92, 255.
+-- Picking `palette.surface` replaces `Color3.` with the full
 -- `Color3.fromRGB(28, 30, 38)` expression.
 ```
+
+Same pattern applies to `UDim.` (constructors + `luix.spacing`
+tokens) and `Font.` (constructors + `luix.fonts` tokens).
+
+### Roblox font catalogue — family + weight autocomplete
+
+Inside `Font.fromName("…")`, the family dropdown surfaces 36 built-in
+Roblox families with their supported weights tagged in the detail line.
+The most-used UI families (BuilderSans, Gotham, Roboto, SourceSansPro,
+…) sort first:
+
+```lua
+FontFace = Font.fromName("|", Enum.FontWeight.Regular)
+                         ^-- dropdown:
+                            BuilderSans       Roblox font · 7 weights
+                            Gotham            Roblox font · 6 weights
+                            Roboto            Roblox font · 9 weights
+                            SourceSansPro     Roblox font · 6 weights
+                            …
+```
+
+The `Enum.FontWeight.` dropdown then filters to **only** the weights
+the active family actually ships:
+
+```lua
+FontFace = Font.fromName("Cartoon", Enum.FontWeight.|)
+                                                     ^-- Regular   (decorative font, only ships Regular)
+
+FontFace = Font.fromName("Roboto", Enum.FontWeight.|)
+                                                    ^-- Thin, ExtraLight, Light, Regular,
+                                                        Medium, SemiBold, Bold, ExtraBold, Heavy
+                                                        (all nine)
+```
+
+**Custom families.** Roblox supports custom font assets — register
+yours via **`luix.customFonts`** and they'll surface in the same
+completions, tagged *Custom font*, sorted above built-ins:
+
+```jsonc
+{
+  "luix.customFonts": {
+    "MyBrandSans":  ["Light", "Regular", "Medium", "Bold"],
+    "MyBrandSerif": ["Regular", "Bold"]
+  }
+}
+```
+
+Weight names must be valid `Enum.FontWeight` members (the JSON schema
+enforces this in VS Code's settings UI). If a custom family shares a
+name with a built-in, the custom weight list wins.
 
 ### Snippets
 
@@ -783,6 +954,19 @@ All settings live under the `luix.*` prefix. Open `Cmd+,` and search
   ]
 }
 ```
+
+### Background / performance
+
+- **`luix.indexPersistence.enabled`** (default `true`) — persists the
+  parsed component index across sessions; unchanged files skip
+  re-parsing on cold start. No behavioral difference; speeds up
+  activation on large workspaces. Disable to keep Luix offline.
+- **`luix.useRobloxApiDump`** (default `false`) — fetch the
+  community-maintained Mini-API-Dump once a day and *add* any new
+  properties Roblox has shipped to the existing completion lists.
+  Additive only — the hand-curated built-in data still wins on
+  conflicts so a stale or partial fetch never breaks existing
+  completions.
 
 ---
 

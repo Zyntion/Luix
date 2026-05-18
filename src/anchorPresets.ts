@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import { findEnclosingPropsCall } from "./parser";
 import { getAliasPartition } from "./frameworks";
+import { isAtPropKeyPosition } from "./completion";
 
 // ============================================================================
 // Anchor-preset completion — `anchor:tl|t|tr|l|c|r|bl|b|br`
@@ -23,7 +24,7 @@ const PRESETS: Preset[] = [
   { slug: "t", label: "top", anchorX: 0.5, anchorY: 0 },
   { slug: "tr", label: "top-right", anchorX: 1, anchorY: 0 },
   { slug: "l", label: "left", anchorX: 0, anchorY: 0.5 },
-  { slug: "c", label: "centre", anchorX: 0.5, anchorY: 0.5 },
+  { slug: "c", label: "center", anchorX: 0.5, anchorY: 0.5 },
   { slug: "r", label: "right", anchorX: 1, anchorY: 0.5 },
   { slug: "bl", label: "bottom-left", anchorX: 0, anchorY: 1 },
   { slug: "b", label: "bottom", anchorX: 0.5, anchorY: 1 },
@@ -45,6 +46,11 @@ export class AnchorPresetCompletionProvider
       getAliasPartition()
     );
     if (!detected) {
+      return undefined;
+    }
+    // Only suggest in key position — don't pollute the dropdown when
+    // the user is typing inside a value expression (e.g. `Font.|`).
+    if (!isAtPropKeyPosition(document, position)) {
       return undefined;
     }
 

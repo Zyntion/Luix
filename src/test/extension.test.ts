@@ -1128,7 +1128,7 @@ suite("buildFolderTree", () => {
   test("groups components by folder when componentsRoot is set", () => {
     // We can't easily fake `vscode.workspace.getWorkspaceFolder` from a
     // test; if no workspace folder is open all entries get dropped at
-    // the root. That degenerate behaviour is itself worth validating.
+    // the root. That degenerate behavior is itself worth validating.
     const tree = sidebar.buildFolderTree(
       [
         fakeEntry("Card", "/proj/src/UI/Components/Card.luau"),
@@ -1204,7 +1204,7 @@ suite("findEnclosingFactoryStringArg", () => {
     assert.strictEqual(r?.callShape, "parens");
   });
 
-  test("parens form — recognises existing props table", () => {
+  test("parens form — recognizes existing props table", () => {
     const r = detectArg(`e("Fr|", { Size = 1 })`);
     assert.ok(r);
     assert.strictEqual(r?.hasPropsAfter, true);

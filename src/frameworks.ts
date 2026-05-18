@@ -1,5 +1,5 @@
 // Framework specifications. Each entry tells the parser which call shapes
-// to recognise and how the framework's quirks (children layout, events as
+// to recognize and how the framework's quirks (children layout, events as
 // props, etc.) should be reflected in completions and inlay hints.
 
 import { getConfig } from "./configCompat";

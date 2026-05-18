@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import {
   AnnotationCompletionProvider,
   ClassNameCompletionProvider,
+  FactoryOpenParenCompletionProvider,
   ReactLuauPropsCompletionProvider,
 } from "./completion";
 import {
@@ -14,6 +15,7 @@ import { DiagnosticsManager } from "./diagnostics";
 import {
   AutoImportCodeActionProvider,
   Color3ConvertCodeActionProvider,
+  Color3PaletteExtractorProvider,
   DeprecationCodeActionProvider,
   UDim2ConvertCodeActionProvider,
   WrapInCodeActionProvider,
@@ -21,7 +23,16 @@ import {
   resolveViaAlias,
 } from "./codeActions";
 import { AnchorPresetCompletionProvider } from "./anchorPresets";
-import { ComponentReferencesLensProvider } from "./codeLens";
+import {
+  ComponentReferencesLensProvider,
+  FrameStatsLensProvider,
+} from "./codeLens";
+import { maybeAugmentFromApiDump } from "./apiDump";
+import { WorkspaceValidation } from "./workspaceValidation";
+import {
+  FontsCompletionProvider,
+  SpacingCompletionProvider,
+} from "./palette";
 import { extractToComponentCommand } from "./extractComponent";
 import { ImageGutterDecorator } from "./imageGutter";
 import {
@@ -44,6 +55,10 @@ import {
 } from "./data";
 import { collectLocalBindings } from "./parser";
 import { PaletteCompletionProvider } from "./palette";
+import {
+  FontFamilyCompletionProvider,
+  FontWeightCompletionProvider,
+} from "./robloxFonts";
 import {
   RichTextColorProvider,
   RichTextCompletionProvider,
@@ -71,7 +86,11 @@ export function activate(context: vscode.ExtensionContext) {
     { language: "luau", scheme: "file" },
   ];
 
-  const workspaceIndex = new WorkspaceIndex();
+  const workspaceIndex = new WorkspaceIndex(context);
+
+  // Kick off the optional Roblox API-dump fetch (no-op when the
+  // setting is off — see `apiDump.ts`).
+  maybeAugmentFromApiDump(context);
   context.subscriptions.push(workspaceIndex);
 
   // Props provider — `.` is needed for `[React.Event.|` and
@@ -99,6 +118,17 @@ export function activate(context: vscode.ExtensionContext) {
       "'"
     )
   );
+  // Optional companion: fire the class picker on `(` so typing `e(`
+  // opens the list without needing to also type the opening quote.
+  // Off by default — many users won't want the trigger to fire on
+  // every function call. Suppression handled inside the provider.
+  context.subscriptions.push(
+    vscode.languages.registerCompletionItemProvider(
+      selector,
+      new FactoryOpenParenCompletionProvider(),
+      "("
+    )
+  );
 
   // Annotation provider — completes `---@extends <Class>` and
   // `---@prop NAME <Type>`. Only fires inside `---` comment lines.
@@ -110,7 +140,7 @@ export function activate(context: vscode.ExtensionContext) {
     )
   );
 
-  // Color preview — gutter swatches and VS Code's colour picker.
+  // Color preview — gutter swatches and VS Code's color picker.
   context.subscriptions.push(
     vscode.languages.registerColorProvider(
       selector,
@@ -221,6 +251,29 @@ export function activate(context: vscode.ExtensionContext) {
     referencesLens,
     vscode.languages.registerCodeLensProvider(selector, referencesLens)
   );
+  // Frame-stats CodeLens — `▸ N descendants, D layers` above heavy
+  // subtrees. Off by default (visual noise).
+  const frameStatsLens = new FrameStatsLensProvider();
+  context.subscriptions.push(
+    frameStatsLens,
+    vscode.languages.registerCodeLensProvider(selector, frameStatsLens)
+  );
+  // Color3-to-palette extractor — code action on any Color3 literal.
+  context.subscriptions.push(
+    vscode.languages.registerCodeActionsProvider(
+      selector,
+      new Color3PaletteExtractorProvider(),
+      {
+        providedCodeActionKinds:
+          Color3PaletteExtractorProvider.providedCodeActionKinds,
+      }
+    )
+  );
+
+  // Workspace-wide diagnostic aggregator. The summary surfaces through
+  // the sidebar; the provider does nothing while disabled.
+  const workspaceValidation = new WorkspaceValidation();
+  context.subscriptions.push(workspaceValidation);
 
   // Gutter image previews next to `Image = "rbxassetid://..."` lines —
   // downloads and caches a tiny thumbnail per asset under the
@@ -235,6 +288,39 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.languages.registerCompletionItemProvider(
       selector,
       new PaletteCompletionProvider(),
+      "."
+    )
+  );
+  // Design-token completion — `luix.spacing` shows after `UDim.`,
+  // `luix.fonts` after `Font.`. Both empty by default — opt-in via
+  // user config.
+  context.subscriptions.push(
+    vscode.languages.registerCompletionItemProvider(
+      selector,
+      new SpacingCompletionProvider(),
+      "."
+    ),
+    vscode.languages.registerCompletionItemProvider(
+      selector,
+      new FontsCompletionProvider(),
+      "."
+    )
+  );
+
+  // Roblox font catalogue — family names inside `Font.fromName("…")`,
+  // weight names after `Enum.FontWeight.`, filtered by the active
+  // family when we can detect it from the surrounding call.
+  context.subscriptions.push(
+    vscode.languages.registerCompletionItemProvider(
+      selector,
+      new FontFamilyCompletionProvider(),
+      '"',
+      "'",
+      "`"
+    ),
+    vscode.languages.registerCompletionItemProvider(
+      selector,
+      new FontWeightCompletionProvider(),
       "."
     )
   );
@@ -280,7 +366,10 @@ export function activate(context: vscode.ExtensionContext) {
   );
 
   // ---- Sidebar (Workspace + Components views) ----
-  const workspaceTreeProvider = new WorkspaceTreeProvider(context);
+  const workspaceTreeProvider = new WorkspaceTreeProvider(
+    context,
+    workspaceValidation
+  );
   const componentsTreeProvider = new ComponentsTreeProvider(
     workspaceIndex,
     context
@@ -396,6 +485,44 @@ export function activate(context: vscode.ExtensionContext) {
             "@ext:ericplane.luix-roblox imageGutter"
           );
         }
+      }
+    ),
+    vscode.commands.registerCommand(
+      "luix.palette.addEntry",
+      async (literal?: string) => {
+        if (typeof literal !== "string") return;
+        const name = await vscode.window.showInputBox({
+          title: "Luix: save Color3 to palette",
+          prompt:
+            "Token name (e.g. `primary`, `surface`, `text`). The literal will be added to `luix.palette` so it surfaces in `Color3.` completions.",
+          validateInput: (v) =>
+            /^[A-Za-z_][A-Za-z0-9_-]*$/.test(v)
+              ? undefined
+              : "Use a simple identifier (letters/digits/dash/underscore).",
+        });
+        if (!name) return;
+        const target = await vscode.window.showQuickPick(
+          [
+            { label: "User settings (global)", target: vscode.ConfigurationTarget.Global },
+            { label: "Workspace settings", target: vscode.ConfigurationTarget.Workspace },
+          ],
+          { title: "Where should the palette entry live?" }
+        );
+        if (!target) return;
+        const cfg = vscode.workspace.getConfiguration("luix");
+        const current = cfg.get<Record<string, string>>("palette", {}) ?? {};
+        if (current[name] && current[name] !== literal) {
+          const overwrite = await vscode.window.showWarningMessage(
+            `Luix: \`palette.${name}\` already exists with value \`${current[name]}\`. Overwrite?`,
+            { modal: true },
+            "Overwrite"
+          );
+          if (overwrite !== "Overwrite") return;
+        }
+        await cfg.update("palette", { ...current, [name]: literal }, target.target);
+        void vscode.window.showInformationMessage(
+          `Luix: added \`palette.${name}\` → \`${literal}\`.`
+        );
       }
     ),
     vscode.commands.registerCommand(

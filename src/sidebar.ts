@@ -4,6 +4,7 @@ import { detectWorkspaceCapabilities } from "./wally";
 import { DocumentComponentInfo } from "./parser";
 import { configChangeAffects, getConfig } from "./configCompat";
 import { getCacheStats } from "./assetThumbnails";
+import { WorkspaceValidation } from "./workspaceValidation";
 
 // ============================================================================
 // Workspace view — Wally / Rojo / scaffold entries
@@ -27,7 +28,10 @@ export class WorkspaceTreeProvider
   private cacheStats: { count: number; bytes: number } = { count: 0, bytes: 0 };
   private disposables: vscode.Disposable[] = [];
 
-  constructor(private readonly context: vscode.ExtensionContext) {
+  constructor(
+    private readonly context: vscode.ExtensionContext,
+    private readonly workspaceValidation?: WorkspaceValidation
+  ) {
     void this.refreshCapabilities();
     void this.refreshCacheStats();
     const watcher = vscode.workspace.createFileSystemWatcher(
@@ -39,11 +43,20 @@ export class WorkspaceTreeProvider
       watcher.onDidDelete(() => this.refreshCapabilities()),
       watcher.onDidChange(() => this.refreshCapabilities()),
       vscode.workspace.onDidChangeConfiguration((e) => {
-        if (configChangeAffects(e, "imageGutter")) {
+        if (
+          configChangeAffects(e, "imageGutter") ||
+          configChangeAffects(e, "workspaceValidation")
+        ) {
           void this.refreshCacheStats();
+          this._onDidChange.fire();
         }
       })
     );
+    if (this.workspaceValidation) {
+      this.disposables.push(
+        this.workspaceValidation.onDidChange(() => this._onDidChange.fire())
+      );
+    }
   }
 
   /** Re-tally the cache size & fire a tree refresh. Called by the
@@ -163,6 +176,29 @@ export class WorkspaceTreeProvider
           groupOrder: 21,
         }
       );
+    }
+
+    // Workspace-wide validation summary — only shown when the user
+    // has opted in.
+    if (
+      getConfig<boolean>("workspaceValidation.enabled", false) &&
+      this.workspaceValidation
+    ) {
+      const s = this.workspaceValidation.getSummary();
+      const total = s.warnings + s.errors + s.info;
+      const description =
+        total === 0
+          ? "no issues"
+          : `${s.errors > 0 ? `${s.errors} error${s.errors === 1 ? "" : "s"} · ` : ""}${s.warnings} warning${s.warnings === 1 ? "" : "s"}${s.info > 0 ? ` · ${s.info} hint${s.info === 1 ? "" : "s"}` : ""}`;
+      items.push({
+        label: "Project diagnostics",
+        description: `${description} across ${s.fileCount} file${s.fileCount === 1 ? "" : "s"}`,
+        tooltip:
+          "Workspace-wide tally of Luix + other publishers' diagnostics. Click to open the Problems panel.",
+        iconId: s.errors > 0 ? "error" : s.warnings > 0 ? "warning" : "check",
+        command: "workbench.actions.view.problems",
+        groupOrder: 22,
+      });
     }
 
     items.sort((a, b) => a.groupOrder - b.groupOrder);

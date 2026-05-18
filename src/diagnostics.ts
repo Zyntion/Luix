@@ -3,7 +3,11 @@ import { PROP_TYPES, defaultPropsMap, flattenClassProps } from "./data";
 import {
   AliasPartition,
   applyMask,
+  buildCallTree,
   buildCodeMask,
+  CallTreeNode,
+  CreateElementCall,
+  extractColorLiterals,
   extractPropEntries,
   findAllCreateElementCalls,
   findEnclosingPropsCall,
@@ -16,16 +20,19 @@ import { getAliasPartition } from "./frameworks";
 import { WorkspaceIndex } from "./workspaceIndex";
 
 export const DIAGNOSTIC_CODE = {
-  ReservedName: "rlph.reserved-name",
-  DeprecatedFont: "rlph.deprecated-font",
-  TypoTextColor: "rlph.typo-textcolor",
-  MissingImport: "rlph.missing-import",
+  ReservedName: "luix.reserved-name",
+  DeprecatedFont: "luix.deprecated-font",
+  TypoTextColor: "luix.typo-textcolor",
+  MissingImport: "luix.missing-import",
   UnknownProp: "luix.unknown-prop",
   DuplicateProp: "luix.duplicate-prop",
   WrongEnumType: "luix.wrong-enum-type",
   OverriddenByComponent: "luix.overridden-by-component",
   MissingRichText: "luix.missing-richtext",
   MissingAnchorPoint: "luix.missing-anchorpoint",
+  NumericRange: "luix.numeric-range",
+  TextScaledGotcha: "luix.text-scaled-gotcha",
+  LowContrast: "luix.low-contrast",
 } as const;
 
 export class DiagnosticsManager implements vscode.Disposable {
@@ -34,9 +41,7 @@ export class DiagnosticsManager implements vscode.Disposable {
   private debounceTimers = new Map<string, NodeJS.Timeout>();
 
   constructor(private readonly workspaceIndex: WorkspaceIndex) {
-    this.collection = vscode.languages.createDiagnosticCollection(
-      "react-luau-props-helper"
-    );
+    this.collection = vscode.languages.createDiagnosticCollection("luix");
     this.disposables.push(this.collection);
     this.disposables.push(
       vscode.workspace.onDidOpenTextDocument((d) => {
@@ -54,7 +59,8 @@ export class DiagnosticsManager implements vscode.Disposable {
           configChangeAffects(e, "deprecationDiagnostics") ||
           configChangeAffects(e, "autoImport") ||
           configChangeAffects(e, "propValidation") ||
-          configChangeAffects(e, "richText")
+          configChangeAffects(e, "richText") ||
+          configChangeAffects(e, "contrastWarnings")
         ) {
           this.refreshAllOpenDocuments();
         }
@@ -128,6 +134,9 @@ export class DiagnosticsManager implements vscode.Disposable {
     if (getConfig<boolean>("richText.enabled", true)) {
       diagnostics.push(...computeMissingRichTextDiagnostics(text, document));
     }
+    if (getConfig<boolean>("contrastWarnings.enabled", false)) {
+      diagnostics.push(...computeContrastDiagnostics(text, document));
+    }
 
     return diagnostics;
   }
@@ -189,7 +198,7 @@ async function computeMissingImportDiagnostics(
       vscode.DiagnosticSeverity.Information
     );
     d.code = DIAGNOSTIC_CODE.MissingImport;
-    d.source = "react-luau-props-helper";
+    d.source = "luix";
     out.push(d);
   }
 
@@ -240,7 +249,7 @@ function computeReservedNameDiagnostics(text: string): vscode.Diagnostic[] {
         vscode.DiagnosticSeverity.Warning
       );
       d.code = DIAGNOSTIC_CODE.ReservedName;
-      d.source = "react-luau-props-helper";
+      d.source = "luix";
       out.push(d);
     }
   }
@@ -273,7 +282,7 @@ function computeDeprecationDiagnostics(
       vscode.DiagnosticSeverity.Information
     );
     d.code = DIAGNOSTIC_CODE.DeprecatedFont;
-    d.source = "react-luau-props-helper";
+    d.source = "luix";
     d.tags = [vscode.DiagnosticTag.Deprecated];
     out.push(d);
   }
@@ -297,7 +306,7 @@ function computeDeprecationDiagnostics(
       vscode.DiagnosticSeverity.Warning
     );
     d.code = DIAGNOSTIC_CODE.TypoTextColor;
-    d.source = "react-luau-props-helper";
+    d.source = "luix";
     out.push(d);
   }
 
@@ -407,6 +416,67 @@ function computePropValidationDiagnostics(
       }
     }
 
+    // ---- Numeric-range warnings ----
+    for (const entry of entries) {
+      const range = NUMERIC_RANGES[entry.key];
+      if (!range) continue;
+      const value = propsBody
+        .slice(entry.valueStart, entry.valueEnd)
+        .trim();
+      const num = Number(value);
+      if (!Number.isFinite(num)) continue;
+      if (num < range.min || num > range.max) {
+        const start = document.positionAt(bodyStart + entry.valueStart);
+        const end = document.positionAt(bodyStart + entry.valueEnd);
+        const d = new vscode.Diagnostic(
+          new vscode.Range(start, end),
+          `\`${entry.key}\` is typically in \`${range.min}..${range.max}\` — got \`${num}\`.`,
+          vscode.DiagnosticSeverity.Warning
+        );
+        d.code = DIAGNOSTIC_CODE.NumericRange;
+        d.source = "luix";
+        out.push(d);
+      }
+    }
+
+    // ---- TextScaled gotcha ----
+    // `TextScaled = true` requires at least one Size axis to be a
+    // fixed pixel offset (or `AutomaticSize` covering the other axis).
+    // When Size is `UDim2.fromScale(...)` only — or missing entirely
+    // — the text auto-scales toward zero and disappears.
+    {
+      const textScaledEntry = entries.find((e) => e.key === "TextScaled");
+      if (textScaledEntry) {
+        const value = propsBody
+          .slice(textScaledEntry.valueStart, textScaledEntry.valueEnd)
+          .trim();
+        if (value === "true") {
+          const sizeEntry = entries.find((e) => e.key === "Size");
+          const sizeValue = sizeEntry
+            ? propsBody
+                .slice(sizeEntry.valueStart, sizeEntry.valueEnd)
+                .trim()
+            : "";
+          if (looksScaleOnly(sizeValue) && !hasAutomaticSize(entries, propsBody)) {
+            const startPos = document.positionAt(
+              bodyStart + textScaledEntry.keyStart
+            );
+            const endPos = document.positionAt(
+              bodyStart + textScaledEntry.keyEnd
+            );
+            const d = new vscode.Diagnostic(
+              new vscode.Range(startPos, endPos),
+              "`TextScaled = true` needs a `Size` with at least one fixed-offset axis (e.g. `UDim2.new(0, X, 0, Y)`) or `AutomaticSize` to render text — pure-scale sizes can collapse to zero.",
+              vscode.DiagnosticSeverity.Warning
+            );
+            d.code = DIAGNOSTIC_CODE.TextScaledGotcha;
+            d.source = "luix";
+            out.push(d);
+          }
+        }
+      }
+    }
+
     // ---- Missing AnchorPoint (Position uses scale 0.5 or 1) ----
     {
       const posEntry = entries.find((e) => e.key === "Position");
@@ -421,7 +491,7 @@ function computePropValidationDiagnostics(
           const end = document.positionAt(bodyStart + posEntry.keyEnd);
           const d = new vscode.Diagnostic(
             new vscode.Range(start, end),
-            `\`Position\` uses scale ${formatPair(detected)} but no \`AnchorPoint\` is set — the element's top-left will land there instead of its centre/corner. Add \`AnchorPoint = Vector2.new(${formatPair(detected)})\`?`,
+            `\`Position\` uses scale ${formatPair(detected)} but no \`AnchorPoint\` is set — the element's top-left will land there instead of its center/corner. Add \`AnchorPoint = Vector2.new(${formatPair(detected)})\`?`,
             vscode.DiagnosticSeverity.Information
           );
           d.code = DIAGNOSTIC_CODE.MissingAnchorPoint;
@@ -469,7 +539,7 @@ function computePropValidationDiagnostics(
 /**
  * Inspect a Position RHS expression and return the scale pair if either
  * channel is `0.5` or `1` — those land the element's top-left at the
- * centre / far edge, which is almost never what the author meant
+ * center / far edge, which is almost never what the author meant
  * without a matching AnchorPoint. Returns undefined for
  * `UDim2.fromOffset(...)` (no scale at all) and for `(0, 0)` scales
  * (already aligns with the default AnchorPoint).
@@ -502,6 +572,183 @@ function formatPair(p: { x: number; y: number }): string {
   const fmt = (n: number) =>
     Number.isInteger(n) ? n.toString() : n.toString();
   return `${fmt(p.x)}, ${fmt(p.y)}`;
+}
+
+/**
+ * Per-prop sensible numeric bounds. Anything outside warns. The ranges
+ * are conservative — most are exact Roblox limits, a few (Rotation,
+ * ZIndex) are "almost certainly a typo" thresholds rather than hard
+ * caps.
+ */
+const NUMERIC_RANGES: Record<string, { min: number; max: number }> = {
+  BackgroundTransparency: { min: 0, max: 1 },
+  TextTransparency: { min: 0, max: 1 },
+  TextStrokeTransparency: { min: 0, max: 1 },
+  ImageTransparency: { min: 0, max: 1 },
+  ScrollBarImageTransparency: { min: 0, max: 1 },
+  GroupTransparency: { min: 0, max: 1 },
+  Transparency: { min: 0, max: 1 },
+  TextSize: { min: 1, max: 100 },
+  MinTextSize: { min: 1, max: 100 },
+  MaxTextSize: { min: 1, max: 100 },
+  Rotation: { min: -360, max: 360 },
+  LineHeight: { min: 1, max: 3 },
+  BorderSizePixel: { min: 0, max: 32 },
+  ScrollBarThickness: { min: 0, max: 50 },
+  ZIndex: { min: -2_000_000, max: 2_000_000 },
+  LayoutOrder: { min: -1_000_000, max: 1_000_000 },
+};
+
+function looksScaleOnly(sizeValue: string): boolean {
+  // Empty / missing → also scale-only for our purposes.
+  if (!sizeValue) return true;
+  const e = sizeValue.replace(/\s+/g, "");
+  // `UDim2.fromScale(0.X, 0.Y)` or `(1, 1)` etc. — no offsets at all.
+  if (/^UDim2\.fromScale\([-\d.]+,[-\d.]+\)$/.test(e)) {
+    return true;
+  }
+  // `UDim2.new(s, 0, s, 0)` — explicit zero offsets.
+  const m = /^UDim2\.new\((-?[\d.]+),(-?[\d.]+),(-?[\d.]+),(-?[\d.]+)\)$/.exec(e);
+  if (m) {
+    const xOffset = parseFloat(m[2]);
+    const yOffset = parseFloat(m[4]);
+    return xOffset === 0 && yOffset === 0;
+  }
+  return false;
+}
+
+function hasAutomaticSize(
+  entries: Array<{ key: string; valueStart: number; valueEnd: number }>,
+  body: string
+): boolean {
+  const entry = entries.find((e) => e.key === "AutomaticSize");
+  if (!entry) return false;
+  const v = body.slice(entry.valueStart, entry.valueEnd).trim();
+  // Any non-`None` value covers at least one axis.
+  return !/Enum\.AutomaticSize\.None\b/.test(v);
+}
+
+// ============================================================================
+// Color contrast warnings (WCAG)
+// ============================================================================
+//
+// Off by default. When enabled, scan each Text element's `TextColor3`
+// against the nearest ancestor's `BackgroundColor3` and warn if the
+// WCAG-AA contrast ratio is below 4.5:1 (the spec's threshold for
+// "normal text"). Both colors must be literal Color3 expressions —
+// reactive Fusion `Value`/`Computed` and Vide sources are skipped.
+
+const WCAG_AA_THRESHOLD = 4.5;
+
+function computeContrastDiagnostics(
+  text: string,
+  document: vscode.TextDocument
+): vscode.Diagnostic[] {
+  const out: vscode.Diagnostic[] = [];
+  const aliases = getAliasPartition();
+  const calls = findAllCreateElementCalls(text, aliases);
+  if (calls.length === 0) return out;
+  const tree = buildCallTree(calls);
+
+  // Walk the tree, carrying the nearest ancestor `BackgroundColor3`
+  // down to each Text* element.
+  const visit = (
+    node: CallTreeNode,
+    inheritedBg: { r: number; g: number; b: number } | undefined
+  ): void => {
+    const ownBg = readColor3Prop(node.call, text, "BackgroundColor3");
+    const bgForChildren = ownBg ?? inheritedBg;
+    if (isTextClass(node.call.className)) {
+      const fg = readColor3Prop(node.call, text, "TextColor3");
+      if (fg && bgForChildren) {
+        const ratio = contrastRatio(fg, bgForChildren);
+        if (ratio < WCAG_AA_THRESHOLD) {
+          const key = findKeyRange(node.call, text, "TextColor3");
+          if (key) {
+            const start = document.positionAt(key.start);
+            const end = document.positionAt(key.end);
+            const d = new vscode.Diagnostic(
+              new vscode.Range(start, end),
+              `Low contrast: \`TextColor3\` vs ancestor \`BackgroundColor3\` = ${ratio.toFixed(2)}:1 (WCAG-AA requires ≥ 4.5:1 for normal text).`,
+              vscode.DiagnosticSeverity.Warning
+            );
+            d.code = DIAGNOSTIC_CODE.LowContrast;
+            d.source = "luix";
+            out.push(d);
+          }
+        }
+      }
+    }
+    for (const child of node.children) {
+      visit(child, bgForChildren);
+    }
+  };
+  for (const root of tree) {
+    visit(root, undefined);
+  }
+  return out;
+}
+
+const TEXT_CLASSES = new Set(["TextLabel", "TextButton", "TextBox"]);
+function isTextClass(name: string): boolean {
+  return TEXT_CLASSES.has(name);
+}
+
+function readColor3Prop(
+  call: CreateElementCall,
+  text: string,
+  key: string
+): { r: number; g: number; b: number } | undefined {
+  if (call.propsBraceStart === undefined || call.propsBraceEnd === undefined) {
+    return undefined;
+  }
+  const body = text.slice(call.propsBraceStart + 1, call.propsBraceEnd);
+  const entries = extractPropEntries(body);
+  const entry = entries.find((e) => e.key === key);
+  if (!entry) return undefined;
+  const value = body.slice(entry.valueStart, entry.valueEnd).trim();
+  if (!/^Color3\./.test(value)) return undefined;
+  const masked = applyMask(value, buildCodeMask(value));
+  const lits = extractColorLiterals(masked, value);
+  if (lits[0]) {
+    return { r: lits[0].r, g: lits[0].g, b: lits[0].b };
+  }
+  return undefined;
+}
+
+function findKeyRange(
+  call: CreateElementCall,
+  text: string,
+  key: string
+): { start: number; end: number } | undefined {
+  if (call.propsBraceStart === undefined || call.propsBraceEnd === undefined) {
+    return undefined;
+  }
+  const body = text.slice(call.propsBraceStart + 1, call.propsBraceEnd);
+  const entries = extractPropEntries(body);
+  const entry = entries.find((e) => e.key === key);
+  if (!entry) return undefined;
+  return {
+    start: call.propsBraceStart + 1 + entry.keyStart,
+    end: call.propsBraceStart + 1 + entry.keyEnd,
+  };
+}
+
+function relativeLuminance(c: { r: number; g: number; b: number }): number {
+  const f = (x: number) =>
+    x <= 0.03928 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4);
+  return 0.2126 * f(c.r) + 0.7152 * f(c.g) + 0.0722 * f(c.b);
+}
+
+function contrastRatio(
+  a: { r: number; g: number; b: number },
+  b: { r: number; g: number; b: number }
+): number {
+  const la = relativeLuminance(a);
+  const lb = relativeLuminance(b);
+  const lighter = Math.max(la, lb);
+  const darker = Math.min(la, lb);
+  return (lighter + 0.05) / (darker + 0.05);
 }
 
 /**

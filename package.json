@@ -2,7 +2,7 @@
   "name": "luix-roblox",
   "displayName": "Luix Roblox",
   "description": "All-in-one Roblox UI authoring helper for React-Luau, Fusion, Vide, and Roact — prop completions, hover docs, inlay hints, color preview, deprecation diagnostics, and more.",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "publisher": "ericplane",
   "icon": "assets/icon.png",
   "author": {
@@ -180,6 +180,11 @@
         "title": "Luix: Open image preview cache folder",
         "category": "Luix",
         "icon": "$(folder-opened)"
+      },
+      {
+        "command": "luix.palette.addEntry",
+        "title": "Luix: Save Color3 to palette",
+        "category": "Luix"
       }
     ],
     "menus": {
@@ -235,7 +240,7 @@
             "fusion",
             "vide"
           ],
-          "markdownDescription": "Which Roblox UI frameworks Luix recognises. Disable the ones you don't use to keep completions tight. Each framework has its own call syntax — Luix picks up `e(...)` / `Roact.createElement(...)` (parens form) and `New \"X\" {...}` / `create \"X\" {...}` (curried form) accordingly."
+          "markdownDescription": "Which Roblox UI frameworks Luix recognizes. Disable the ones you don't use to keep completions tight. Each framework has its own call syntax — Luix picks up `e(...)` / `Roact.createElement(...)` (parens form) and `New \"X\" {...}` / `create \"X\" {...}` (curried form) accordingly."
         },
         "luix.react.aliases": {
           "type": "array",
@@ -327,7 +332,7 @@
         "luix.typeAwareValues": {
           "type": "boolean",
           "default": true,
-          "markdownDescription": "When the prop's type is known (e.g. `BackgroundColor3` is `Color3`), insert a value template alongside the prop name. For example, `BackgroundColor3` becomes `BackgroundColor3 = Color3.fromRGB(255, 255, 255)` with tab stops at each colour channel. Disable for the older minimal-snippet behaviour."
+          "markdownDescription": "When the prop's type is known (e.g. `BackgroundColor3` is `Color3`), insert a value template alongside the prop name. For example, `BackgroundColor3` becomes `BackgroundColor3 = Color3.fromRGB(255, 255, 255)` with tab stops at each color channel. Disable for the older minimal-snippet behavior."
         },
         "luix.documentSymbols.enabled": {
           "type": "boolean",
@@ -337,7 +342,7 @@
         "luix.colorPreview.enabled": {
           "type": "boolean",
           "default": true,
-          "markdownDescription": "When enabled (default), `Color3.fromRGB(...)` and `Color3.new(...)` get a gutter swatch and a colour picker. Disable if another extension (such as a Roblox API extension) already provides this and you're seeing duplicate pickers."
+          "markdownDescription": "When enabled (default), `Color3.fromRGB(...)` and `Color3.new(...)` get a gutter swatch and a color picker. Disable if another extension (such as a Roblox API extension) already provides this and you're seeing duplicate pickers."
         },
         "luix.palette": {
           "type": "object",
@@ -345,7 +350,7 @@
           "additionalProperties": {
             "type": "string"
           },
-          "markdownDescription": "Project palette: named colours that appear as completions when you type `Color3.`. Each value should be the full Roblox expression to insert. Example:\n\n```jsonc\n{\n  \"luix.palette\": {\n    \"primary\":    \"Color3.fromRGB(124, 92, 255)\",\n    \"background\": \"Color3.fromRGB(21, 21, 26)\",\n    \"surface\":    \"Color3.fromRGB(28, 30, 38)\",\n    \"text\":       \"Color3.fromRGB(255, 255, 255)\"\n  }\n}\n```\n\nTyping `BackgroundColor3 = Color3.` then `palette.primary` inserts the full `Color3.fromRGB(124, 92, 255)` expression."
+          "markdownDescription": "Project palette: named colors that appear as completions when you type `Color3.`. Each value should be the full Roblox expression to insert. Example:\n\n```jsonc\n{\n  \"luix.palette\": {\n    \"primary\":    \"Color3.fromRGB(124, 92, 255)\",\n    \"background\": \"Color3.fromRGB(21, 21, 26)\",\n    \"surface\":    \"Color3.fromRGB(28, 30, 38)\",\n    \"text\":       \"Color3.fromRGB(255, 255, 255)\"\n  }\n}\n```\n\nTyping `BackgroundColor3 = Color3.` then `palette.primary` inserts the full `Color3.fromRGB(124, 92, 255)` expression."
         },
         "luix.exclude": {
           "type": "array",
@@ -444,7 +449,7 @@
         "luix.richText.enabled": {
           "type": "boolean",
           "default": true,
-          "markdownDescription": "When enabled (default), typing `<` inside a string literal surfaces Roblox RichText tags (`<b>`, `<i>`, `<font …>`, `<stroke …>`, `<mark …>`, `<br/>`, …) with snippets that include the matching close tag. Inside an open `<font …>`, `<stroke …>`, or `<mark …>`, attribute completion (`color`, `size`, `face`, `family`, `weight`, `transparency`, `thickness`, `joins`) fires so multiple attributes can be combined. Also auto-inserts `</tag>` when you finish typing an opening tag like `<font size=\"18\">`. Inner attribute quotes adapt to the outer Lua string's quote so they don't need backslash escaping. `color=\"...\"` values in `<font>`, `<stroke>`, and `<mark>` get VS Code's inline colour picker, and a `Text = \"…<font…>…\"` value with no `RichText = true` in the same props table gets a warning. Disable if you don't use RichText or want a quieter completion list inside strings."
+          "markdownDescription": "When enabled (default), typing `<` inside a string literal surfaces Roblox RichText tags (`<b>`, `<i>`, `<font …>`, `<stroke …>`, `<mark …>`, `<br/>`, …) with snippets that include the matching close tag. Inside an open `<font …>`, `<stroke …>`, or `<mark …>`, attribute completion (`color`, `size`, `face`, `family`, `weight`, `transparency`, `thickness`, `joins`) fires so multiple attributes can be combined. Also auto-inserts `</tag>` when you finish typing an opening tag like `<font size=\"18\">`. Inner attribute quotes adapt to the outer Lua string's quote so they don't need backslash escaping. `color=\"...\"` values in `<font>`, `<stroke>`, and `<mark>` get VS Code's inline color picker, and a `Text = \"…<font…>…\"` value with no `RichText = true` in the same props table gets a warning. Disable if you don't use RichText or want a quieter completion list inside strings."
         },
         "luix.color3.defaultFormat": {
           "type": "string",
@@ -456,7 +461,7 @@
             "`Color3.fromHSV(0, 0, 1)` — hue/saturation/value, all 0-1."
           ],
           "default": "fromRGB",
-          "markdownDescription": "Constructor used when Luix inserts a `Color3` value template for a prop completion (`BackgroundColor3`, `TextColor3`, `BorderColor3`, …). Doesn't affect the colour picker's round-trip — the picker always preserves the form your existing value already uses."
+          "markdownDescription": "Constructor used when Luix inserts a `Color3` value template for a prop completion (`BackgroundColor3`, `TextColor3`, `BorderColor3`, …). Doesn't affect the color picker's round-trip — the picker always preserves the form your existing value already uses."
         },
         "luix.richText.defaultColorFormat": {
           "type": "string",
@@ -466,12 +471,12 @@
             "Default placeholders are written as `rgb(255, 255, 255)`."
           ],
           "default": "hex",
-          "markdownDescription": "Format used for the placeholder colour values in RichText snippets — `<font color=\"…\">`, `<stroke color=\"…\">`, `<mark color=\"…\">`. Doesn't affect the colour picker's round-trip — the picker always preserves whichever form your existing value already uses."
+          "markdownDescription": "Format used for the placeholder color values in RichText snippets — `<font color=\"…\">`, `<stroke color=\"…\">`, `<mark color=\"…\">`. Doesn't affect the color picker's round-trip — the picker always preserves whichever form your existing value already uses."
         },
         "luix.richText.colorPicker": {
           "type": "boolean",
           "default": true,
-          "markdownDescription": "When enabled (default), `color=\"…\"` values inside `<font>`, `<stroke>`, and `<mark>` RichText tags get VS Code's inline colour swatch and picker. Independent from `#luix.colorPreview.enabled#` (which controls the `Color3.fromRGB(…)` / `Color3.new(…)` picker) so you can disable the Color3 picker — e.g. to avoid clashing with another Roblox-API extension — while keeping the RichText one."
+          "markdownDescription": "When enabled (default), `color=\"…\"` values inside `<font>`, `<stroke>`, and `<mark>` RichText tags get VS Code's inline color swatch and picker. Independent from `#luix.colorPreview.enabled#` (which controls the `Color3.fromRGB(…)` / `Color3.new(…)` picker) so you can disable the Color3 picker — e.g. to avoid clashing with another Roblox-API extension — while keeping the RichText one."
         },
         "luix.robloxGlyphs.enabled": {
           "type": "boolean",
@@ -491,6 +496,21 @@
           "default": true,
           "markdownDescription": "When enabled (default), each component definition gets a `N references` CodeLens above it. Click to peek every workspace call site of `e(MyButton, …)` style invocations. Disable if CodeLens noise bothers you."
         },
+        "luix.frameStatsLens.enabled": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "When enabled, every element call gets a `▸ Frame — N descendants, D layers deep` CodeLens. Off by default because it adds a lot of visual noise; useful when hunting for layout bloat."
+        },
+        "luix.frameStatsLens.minDescendants": {
+          "type": "number",
+          "default": 5,
+          "markdownDescription": "Only show the frame-stats CodeLens for elements with at least this many descendants. Default `5` keeps trivial elements quiet."
+        },
+        "luix.classNameCompletion.triggerOnOpenParen": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "When enabled, typing `e(` opens the class picker without needing to also type the opening quote. Accepting inserts `\"ClassName\", { … })`. Off by default because the trigger char `(` is broad — every Lua function call would briefly invoke the provider (which suppresses itself for non-factory calls, but the extra invocations have a small cost)."
+        },
         "luix.imageGutter.enabled": {
           "type": "boolean",
           "default": false,
@@ -505,6 +525,65 @@
           ],
           "default": "global",
           "markdownDescription": "Where Luix stores downloaded Roblox asset thumbnails for the inline gutter preview.\n\n- **`global`** (default) — shared across every workspace, lives under VS Code's extension storage.\n- **`workspace`** — keeps thumbnails per-project under `.luix/assetThumbs/`. A `.luix/.gitignore` is auto-written.\n\nFlip via Settings or `#luix.imageGutter.cacheLocation#`. The purge button in the Luix sidebar wipes both locations, so switching modes never strands stale files."
+        },
+        "luix.contrastWarnings.enabled": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "When enabled, walks the element tree and flags any `TextColor3` whose WCAG-AA contrast ratio against the nearest ancestor's `BackgroundColor3` is below 4.5:1 (the spec's threshold for normal text). Both colors must be literal `Color3.fromRGB/new/fromHex/fromHSV` expressions — reactive values (Fusion `Value`, Vide source, `Computed`) are skipped. Off by default because the heuristic is strict and the warnings can pile up on existing codebases."
+        },
+        "luix.indexPersistence.enabled": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "When enabled (default), the workspace component index is persisted to disk between sessions so unchanged files don't need to be re-parsed on cold start. Has no user-visible behavioral difference — only a startup-time saving on large workspaces. Disable if you'd rather Luix never write to its global storage."
+        },
+        "luix.workspaceValidation.enabled": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "When enabled, the Luix sidebar shows a `Project diagnostics — N warnings · M errors across X files` summary aggregated from VS Code's diagnostics collection. Counts only files VS Code has produced diagnostics for (typically: opened files + files surfaced by other extensions / language servers). Off by default."
+        },
+        "luix.useRobloxApiDump": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "When enabled, fetches the community-maintained Roblox API dump and merges any *additional* properties it reports for classes Luix already knows about into the in-memory prop map. Cached on disk for 24 hours; the dump is additive only (built-in props always win on conflicts) so a stale or partial fetch never breaks existing completions. Off by default because the hand-curated built-in data is reliable and works offline."
+        },
+        "luix.spacing": {
+          "type": "object",
+          "default": {},
+          "additionalProperties": { "type": "string" },
+          "markdownDescription": "Named spacing tokens that surface as completions when you type `UDim.`. Each value should be the full Roblox expression to insert.\n\n```jsonc\n{\n  \"luix.spacing\": {\n    \"xs\": \"UDim.new(0, 4)\",\n    \"sm\": \"UDim.new(0, 8)\",\n    \"md\": \"UDim.new(0, 16)\",\n    \"lg\": \"UDim.new(0, 24)\"\n  }\n}\n```\n\nMirror of `luix.palette` for `Color3`."
+        },
+        "luix.fonts": {
+          "type": "object",
+          "default": {},
+          "additionalProperties": { "type": "string" },
+          "markdownDescription": "Named font tokens that surface as completions when you type `Font.`. Each value should be the full Roblox expression to insert.\n\n```jsonc\n{\n  \"luix.fonts\": {\n    \"display\": \"Font.fromName(\\\"Gotham\\\", Enum.FontWeight.Bold)\",\n    \"body\":    \"Font.fromName(\\\"SourceSansPro\\\", Enum.FontWeight.Regular)\"\n  }\n}\n```"
+        },
+        "luix.font.defaultFamily": {
+          "type": "string",
+          "default": "Montserrat",
+          "markdownDescription": "Family name used as the placeholder when Luix inserts a `Font.fromName(\"…\", Enum.FontWeight.Regular)` snippet (e.g. after accepting `FontFace` + `fromName` from the suggest dropdown). Defaults to `Montserrat` — the canonical name Roblox now aliases the legacy `Gotham*` enum values to.\n\nSet this to your project's house font so accepted snippets land with the right family selected. Built-in fonts: `Montserrat`, `BuilderSans`, `Gotham`, `Roboto`, `SourceSansPro`, etc. — or any family you've added to `#luix.customFonts#`."
+        },
+        "luix.customFonts": {
+          "type": "object",
+          "default": {},
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "Thin",
+                "ExtraLight",
+                "Light",
+                "Regular",
+                "Medium",
+                "SemiBold",
+                "Bold",
+                "ExtraBold",
+                "Heavy"
+              ]
+            }
+          },
+          "markdownDescription": "Custom Roblox font families and their supported weights, surfaced in the same `Font.fromName(\"…\")` and `Enum.FontWeight.` completions as the built-in catalog. Useful when you've uploaded your own font assets and registered them as a family. Keys are the family name string you pass to `Font.fromName`; values are the list of weights the family ships. Invalid weight names (anything not in the `FontWeight` enum) are silently filtered.\n\n```jsonc\n{\n  \"luix.customFonts\": {\n    \"MyBrandSans\":  [\"Light\", \"Regular\", \"Medium\", \"Bold\"],\n    \"MyBrandSerif\": [\"Regular\", \"Bold\"]\n  }\n}\n```\n\nCustom entries surface above built-ins in the dropdown and are tagged *Custom font* in the suggest details. If a custom family shares a name with a built-in, the custom weight list wins."
         },
         "luix.propValidation.enabled": {
           "type": "boolean",

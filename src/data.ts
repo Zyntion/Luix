@@ -143,7 +143,9 @@ export const classHierarchy: Record<string, ClassDef> = {
   TextLabel: {
     inherits: "GuiObject",
     own: [
-      "Font",
+      // `Font` is intentionally omitted — it's deprecated in favor of
+      // `FontFace`. The deprecation diagnostic still catches anyone
+      // who writes `Font = Enum.Font.X` and offers the quick-fix.
       "FontFace",
       "LineHeight",
       "MaxVisibleGraphemes",
@@ -169,8 +171,8 @@ export const classHierarchy: Record<string, ClassDef> = {
   TextButton: {
     inherits: "GuiButton",
     own: [
-      // Mirrored from TextLabel for the prop list:
-      "Font",
+      // Mirrored from TextLabel for the prop list. `Font` is
+      // intentionally omitted — deprecated in favor of `FontFace`.
       "FontFace",
       "LineHeight",
       "MaxVisibleGraphemes",
@@ -685,7 +687,6 @@ export const PROP_TYPES: Record<string, string> = {
   ElasticBehavior: "Enum.ElasticBehavior",
   FillDirection: "Enum.FillDirection",
   FlexMode: "Enum.UIFlexMode",
-  Font: "Enum.Font",
   HorizontalAlignment: "Enum.HorizontalAlignment",
   HorizontalFlex: "Enum.UIFlexAlignment",
   HorizontalScrollBarInset: "Enum.ScrollBarInset",

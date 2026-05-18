@@ -319,5 +319,17 @@
       "end,"
     ],
     "description": "React.Event handler entry"
+  },
+  "CFrame.Angles (degrees)": {
+    "prefix": "cfangles",
+    "scope": "lua,luau",
+    "body": "CFrame.Angles(math.rad(${1:0}), math.rad(${2:0}), math.rad(${3:0}))$0",
+    "description": "Rotation-only CFrame, Euler angles in degrees (wrapped in math.rad)."
+  },
+  "CFrame.Angles (radians)": {
+    "prefix": "cfanglesrad",
+    "scope": "lua,luau",
+    "body": "CFrame.Angles(${1:0}, ${2:0}, ${3:0})$0",
+    "description": "Rotation-only CFrame, Euler angles in radians."
   }
 }

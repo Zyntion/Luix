@@ -16,4 +16,4 @@ package-lock.json
 *.vsix
 .DS_Store
 
-devforum-post.md
+devforum-post/

@@ -123,7 +123,7 @@ export async function scaffoldComponent(
 ): Promise<void> {
   const targetDir = await resolveTargetDir(targetDirUri, framework);
   if (!targetDir) {
-    return; // user cancelled or no workspace
+    return; // user canceled or no workspace
   }
 
   const name = await vscode.window.showInputBox({

@@ -92,6 +92,14 @@ export class ReactLuauPropsCompletionProvider
       return undefined;
     }
 
+    // Only fire when the cursor is at a *key* slot — not mid-value.
+    // Otherwise typing `FontFace = Font.|` would surface every prop
+    // name (BackgroundColor3, …) in the suggest list alongside the
+    // `Font.fromName` / `Font.fromId` constructors.
+    if (!isAtPropKeyPosition(document, position)) {
+      return undefined;
+    }
+
     let props = await getPropsForClass(
       detected.className,
       document,
@@ -130,8 +138,81 @@ export class ReactLuauPropsCompletionProvider
       /[A-Za-z_][A-Za-z0-9_]*/
     );
 
-    return buildItemsForProps(detected.className, props, wordRange);
+    // If the user is RENAMING an existing entry — i.e. `Pad| = UDim.new(0, 4)` —
+    // we shouldn't emit our own `= …,` template; just insert the prop name and
+    // keep the existing value intact.
+    const hasExistingValue = isFollowedByEquals(
+      document,
+      wordRange?.end ?? position
+    );
+
+    // If the cursor's line already has a trailing `,`, extend the
+    // replace range to include it. The snippet still inserts its own
+    // comma, so the existing one is naturally overwritten rather than
+    // doubled — and `$0` (the snippet's final cursor position) lands
+    // AFTER the comma, not between `)` and `,`. Skip this when the
+    // user is renaming — we don't want to swallow their value's
+    // trailing comma either.
+    const effectiveRange = hasExistingValue
+      ? wordRange
+      : extendRangeOverTrailingComma(document, wordRange, position);
+
+    return buildItemsForProps(
+      detected.className,
+      props,
+      effectiveRange,
+      hasExistingValue
+    );
   }
+}
+
+/**
+ * Is the next non-whitespace char after `endPosition` on the same
+ * line an `=` (single-assignment, not `==`)? Used to detect that the
+ * user is renaming an existing prop entry rather than starting a
+ * fresh one.
+ */
+function isFollowedByEquals(
+  document: vscode.TextDocument,
+  endPosition: vscode.Position
+): boolean {
+  const lineText = document.lineAt(endPosition.line).text;
+  for (let i = endPosition.character; i < lineText.length; i++) {
+    const c = lineText[i];
+    if (c === "=") {
+      // Skip `==` (comparison) — that's not an assignment.
+      return lineText[i + 1] !== "=";
+    }
+    if (c !== " " && c !== "\t") {
+      return false;
+    }
+  }
+  return false;
+}
+
+/**
+ * If a `,` appears as the next non-whitespace char on the cursor's line
+ * after `wordRange`, return a new range covering through that comma.
+ * Otherwise return the input range unchanged.
+ */
+function extendRangeOverTrailingComma(
+  document: vscode.TextDocument,
+  wordRange: vscode.Range | undefined,
+  cursor: vscode.Position
+): vscode.Range | undefined {
+  const searchFrom = wordRange?.end ?? cursor;
+  const lineText = document.lineAt(searchFrom.line).text;
+  for (let i = searchFrom.character; i < lineText.length; i++) {
+    const c = lineText[i];
+    if (c === ",") {
+      const afterComma = new vscode.Position(searchFrom.line, i + 1);
+      return new vscode.Range(wordRange?.start ?? cursor, afterComma);
+    }
+    if (c !== " " && c !== "\t") {
+      return wordRange;
+    }
+  }
+  return wordRange;
 }
 
 // ============================================================================
@@ -226,6 +307,84 @@ const SYNTHETIC_CLASSES = new Set([
 const INSERTABLE_CLASS_NAMES = Object.keys(defaultPropsMap)
   .filter((name) => !SYNTHETIC_CLASSES.has(name))
   .sort();
+
+// ============================================================================
+// Class-name completion right after `e(` — opt-in, off by default
+// ============================================================================
+//
+// When the user types `e(` (without a quote yet), open the class
+// picker and have accept insert the full `"ClassName", { … })` body
+// in one go. Off by default because the trigger char `(` fires very
+// broadly — every function call in Lua — and the provider has to
+// suppress itself in non-factory contexts. Users who want the one-
+// keystroke save can opt in via `luix.classNameCompletion.triggerOnOpenParen`.
+
+export class FactoryOpenParenCompletionProvider
+  implements vscode.CompletionItemProvider
+{
+  provideCompletionItems(
+    document: vscode.TextDocument,
+    position: vscode.Position
+  ): vscode.ProviderResult<vscode.CompletionItem[]> {
+    if (
+      !getConfig<boolean>(
+        "classNameCompletion.triggerOnOpenParen",
+        false
+      )
+    ) {
+      return undefined;
+    }
+    const text = document.getText();
+    const offset = document.offsetAt(position);
+    // We need the cursor to be sitting right after a known factory
+    // alias's `(` — possibly with a paired `)` immediately after if
+    // the editor auto-paired the bracket.
+    const aliases = getAliasPartition();
+    if (aliases.parens.length === 0) return undefined;
+    // Walk back from cursor: must be `(`.
+    if (text[offset - 1] !== "(") return undefined;
+    // Walk further back over the alias identifier (allow dotted).
+    let i = offset - 2;
+    const end = i + 1;
+    while (i >= 0 && /[A-Za-z0-9_.]/.test(text[i])) i--;
+    const alias = text.slice(i + 1, end);
+    if (!aliases.parens.includes(alias)) return undefined;
+    // Make sure what's between the `(` and the cursor is empty (we
+    // walked back from offset-1 = `(`, so that's already guaranteed).
+    // Check what's immediately after the cursor: empty, whitespace, or
+    // an auto-paired `)`.
+    const afterCursor = text[offset] ?? "";
+    const autoPairedCloseParen = afterCursor === ")";
+    const isEmptyAfter =
+      afterCursor === "" ||
+      afterCursor === "\n" ||
+      autoPairedCloseParen;
+    if (!isEmptyAfter) return undefined;
+
+    // Range covers from the cursor to the auto-paired `)` (if present)
+    // so accepting overwrites both rather than leaving a stray `)`.
+    const replaceEnd = autoPairedCloseParen ? offset + 1 : offset;
+    const range = new vscode.Range(
+      position,
+      document.positionAt(replaceEnd)
+    );
+
+    return INSERTABLE_CLASS_NAMES.map((name, index) => {
+      const item = new vscode.CompletionItem(
+        name,
+        vscode.CompletionItemKind.Class
+      );
+      item.detail = "Roblox class";
+      item.filterText = name;
+      item.sortText = String(index).padStart(4, "0");
+      item.range = range;
+      item.insertText = new vscode.SnippetString(
+        `"${name}", {\n\t$1,\n})`
+      );
+      return item;
+    });
+  }
+}
 
 // ============================================================================
 // Annotation completion — `---@extends X` and `---@prop NAME Type`
@@ -454,9 +613,15 @@ async function resolveEffectiveClass(
 function buildItemsForProps(
   className: string,
   props: string[],
-  range: vscode.Range | undefined
+  range: vscode.Range | undefined,
+  hasExistingValue: boolean
 ): vscode.CompletionItem[] {
-  const snippetMode = getConfig<string>("snippetMode", "value-with-comma");
+  // When the user is renaming an existing entry (`Pad| = UDim.new(...)`),
+  // override the configured snippet mode and emit just the prop name —
+  // anything else would inject a duplicate `= …` and corrupt the line.
+  const snippetMode = hasExistingValue
+    ? "name-only"
+    : getConfig<string>("snippetMode", "value-with-comma");
   const typeAware = getConfig<boolean>("typeAwareValues", true);
 
   return props.map((name, index) => {
@@ -472,12 +637,23 @@ function buildItemsForProps(
     item.documentation = new vscode.MarkdownString(
       `\`${className}.${name}\`${
         propType ? ` — type \`${propType}\`` : ""
-      } — suggested by React Luau Props Helper.`
+      } — suggested by Luix.`
     );
     item.filterText = name;
     item.sortText = String(index).padStart(4, "0");
     if (range) {
       item.range = range;
+    }
+    // For Color3 / UDim / Font props in fresh-entry mode, the snippet
+    // drops a namespace prefix (`Color3.`) and parks the cursor right
+    // after the dot — auto-open the suggest dropdown so the user can
+    // pick a constructor or token. Skip the auto-trigger in
+    // rename mode since we only emit the name, no value.
+    if (!hasExistingValue && shouldAutoTriggerSuggest(propType)) {
+      item.command = {
+        command: "editor.action.triggerSuggest",
+        title: "Show value completions",
+      };
     }
     return item;
   });
@@ -486,7 +662,7 @@ function buildItemsForProps(
 /**
  * Resolve the snippet body for a Color3 value, honouring
  * `luix.color3.defaultFormat`. Defaults to `fromRGB` so existing
- * behaviour is preserved.
+ * behavior is preserved.
  */
 function color3Template(): string {
   const fmt = getConfig<string>("color3.defaultFormat", "fromRGB");
@@ -503,14 +679,39 @@ function color3Template(): string {
   }
 }
 
+/**
+ * Types where the snippet should drop a namespace prefix (`Color3.`,
+ * `UDim.`, `Font.`) and immediately open the suggest dropdown so the
+ * user can pick from constructors AND palette/spacing/fonts tokens.
+ *
+ * Picking a constructor (e.g. `fromRGB`) inserts its own snippet with
+ * per-channel tab stops, so the original Tab-through-each-value
+ * workflow is preserved. Picking a token (e.g. `palette.primary`)
+ * replaces the prefix with the full literal.
+ */
+const PREFIX_TRIGGER_TYPES: Record<string, string> = {
+  Color3: "Color3.",
+  UDim: "UDim.",
+  Font: "Font.",
+};
+
 function buildSnippet(
   name: string,
   mode: string,
-  propType?: string
+  propType: string | undefined
 ): vscode.SnippetString {
   let valueTemplate = propType ? renderTypeSnippet(propType) : undefined;
   if (propType === "Color3" && valueTemplate) {
     valueTemplate = color3Template();
+  }
+  const prefix = propType ? PREFIX_TRIGGER_TYPES[propType] : undefined;
+  if (prefix) {
+    // For these types, hand control over to the suggest dropdown
+    // immediately after insertion. The $1 marks the cursor; the
+    // accompanying `command` on the completion item fires
+    // `editor.action.triggerSuggest` so the user sees both constructor
+    // options and any defined palette/spacing/fonts tokens.
+    valueTemplate = `${prefix}\${1}`;
   }
 
   switch (mode) {
@@ -528,4 +729,41 @@ function buildSnippet(
       }
       return new vscode.SnippetString(`${name} = $1,$0`);
   }
+}
+
+/** True for props whose accepted completion should auto-open the suggest
+ *  dropdown so the user can immediately pick a constructor or token. */
+export function shouldAutoTriggerSuggest(propType: string | undefined): boolean {
+  return propType !== undefined && propType in PREFIX_TRIGGER_TYPES;
+}
+
+/**
+ * True when the cursor is at a position where a *key* (prop name)
+ * would be typed in a table — i.e. the start of a new line, right
+ * after the props `{`, or right after a preceding `,` / `;`. Returns
+ * false when the cursor is inside a value expression: walking back
+ * across the same line and prior lines hits `=` before any
+ * key-introducing token.
+ *
+ * Exported so the anchor-preset provider can apply the same check.
+ */
+export function isAtPropKeyPosition(
+  document: vscode.TextDocument,
+  position: vscode.Position
+): boolean {
+  // Walk back line by line until we hit a significant boundary char.
+  // Identifier chars, dots, brackets, parens etc. are ignored — they
+  // may be the partial token the user is currently typing.
+  for (let line = position.line; line >= 0; line--) {
+    const lineText = document.lineAt(line).text;
+    const startCol =
+      line === position.line ? position.character - 1 : lineText.length - 1;
+    for (let i = startCol; i >= 0; i--) {
+      const c = lineText[i];
+      if (c === "=") return false; // value position
+      if (c === "," || c === ";" || c === "{") return true;
+    }
+  }
+  // No boundary found — assume key position (top of file, no `=`).
+  return true;
 }
