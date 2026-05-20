@@ -31,7 +31,12 @@ export class ImageGutterDecorator implements vscode.Disposable {
   private typesByAsset = new Map<string, vscode.TextEditorDecorationType>();
   private pendingAssets = new Set<string>();
   private disposables: vscode.Disposable[] = [];
-  private refreshTimer: NodeJS.Timeout | undefined;
+  // One pending timer per editor — a single shared timer would let a
+  // change in editor A cancel the pending refresh of editor B (common
+  // in split-view), so the second editor never gets its gutter icons
+  // until further changes.
+  private refreshTimers = new WeakMap<vscode.TextEditor, NodeJS.Timeout>();
+  private disposed = false;
 
   constructor(private readonly context: vscode.ExtensionContext) {
     this.disposables.push(
@@ -44,6 +49,9 @@ export class ImageGutterDecorator implements vscode.Disposable {
         }
       }),
       vscode.workspace.onDidChangeTextDocument((e) => {
+        if (!isLuaDoc(e.document)) {
+          return;
+        }
         for (const editor of vscode.window.visibleTextEditors) {
           if (editor.document === e.document) {
             this.refreshSoon(editor);
@@ -66,16 +74,21 @@ export class ImageGutterDecorator implements vscode.Disposable {
     if (!isLuaDoc(editor.document)) {
       return;
     }
-    if (this.refreshTimer) {
-      clearTimeout(this.refreshTimer);
+    const existing = this.refreshTimers.get(editor);
+    if (existing) {
+      clearTimeout(existing);
     }
-    // Debounce — typing fires onDidChangeTextDocument hundreds of times,
-    // and each refresh touches the network on first sight of a new
-    // asset.
-    this.refreshTimer = setTimeout(() => {
-      this.refreshTimer = undefined;
-      void this.refresh(editor);
-    }, 200);
+    // Debounce per editor — typing fires onDidChangeTextDocument
+    // hundreds of times, and each refresh touches the network on first
+    // sight of a new asset.
+    this.refreshTimers.set(
+      editor,
+      setTimeout(() => {
+        this.refreshTimers.delete(editor);
+        if (this.disposed) return;
+        void this.refresh(editor);
+      }, 200)
+    );
   }
 
   private refreshAll(): void {
@@ -250,9 +263,9 @@ export class ImageGutterDecorator implements vscode.Disposable {
   }
 
   dispose(): void {
-    if (this.refreshTimer) {
-      clearTimeout(this.refreshTimer);
-    }
+    // WeakMap can't be iterated, so we can't clear pending timers
+    // directly. The `disposed` flag short-circuits them when they fire.
+    this.disposed = true;
     for (const d of this.disposables) {
       d.dispose();
     }

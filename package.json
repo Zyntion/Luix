@@ -2,7 +2,7 @@
   "name": "luix-roblox",
   "displayName": "Luix Roblox",
   "description": "All-in-one Roblox UI authoring helper for React-Luau, Fusion, Vide, and Roact — prop completions, hover docs, inlay hints, color preview, deprecation diagnostics, and more.",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "publisher": "ericplane",
   "icon": "assets/icon.png",
   "author": {
@@ -14,6 +14,10 @@
     "type": "git",
     "url": "https://github.com/ericplane/Luix.git"
   },
+  "bugs": {
+    "url": "https://github.com/ericplane/Luix/issues"
+  },
+  "homepage": "https://github.com/ericplane/Luix#readme",
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -35,7 +39,15 @@
     "intellisense",
     "completion",
     "wally",
-    "rojo"
+    "rojo",
+    "gradient",
+    "colorsequence",
+    "numbersequence",
+    "tween",
+    "tweeninfo",
+    "sprite",
+    "atlas",
+    "opencloud"
   ],
   "galleryBanner": {
     "color": "#15151a",
@@ -185,6 +197,18 @@
         "command": "luix.palette.addEntry",
         "title": "Luix: Save Color3 to palette",
         "category": "Luix"
+      },
+      {
+        "command": "luix.openGradientEditor",
+        "title": "Luix: Open gradient editor",
+        "category": "Luix",
+        "icon": "$(symbol-color)"
+      },
+      {
+        "command": "luix.openRectEditor",
+        "title": "Luix: Open sprite rect editor",
+        "category": "Luix",
+        "icon": "$(symbol-array)"
       }
     ],
     "menus": {
@@ -530,6 +554,59 @@
           "type": "boolean",
           "default": false,
           "markdownDescription": "When enabled, walks the element tree and flags any `TextColor3` whose WCAG-AA contrast ratio against the nearest ancestor's `BackgroundColor3` is below 4.5:1 (the spec's threshold for normal text). Both colors must be literal `Color3.fromRGB/new/fromHex/fromHSV` expressions — reactive values (Fusion `Value`, Vide source, `Computed`) are skipped. Off by default because the heuristic is strict and the warnings can pile up on existing codebases."
+        },
+        "luix.unusedProps.enabled": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "When enabled (default), flags props declared in a component's parameter type (`props: { Foo: …, Bar: … }`) or its `@luix-props` annotation that are never read in the body. Skipped automatically when the body forwards `props` wholesale (e.g. `e(Base, props)`, `for k, v in props do`, computed-key indexing) since usage can't be determined statically. Shown as a `Hint` with the unused-declaration grey-out treatment — never as a warning or error."
+        },
+        "luix.gradient.codeLensEnabled": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Shows the gradient-editor CodeLenses:\n\n- **Edit UIGradient** — above every `e(\"UIGradient\", { … })` element call. Opens the combined editor (colour ramp + transparency curve + rotation + preview square that multiplies by the parent's `BackgroundColor3`).\n- **Edit gradient** — above any standalone `ColorSequence.new(...)` literal that isn't inside a UIGradient. Opens the focused colour-band editor.\n- **Edit sequence** — above any standalone `NumberSequence.new(...)` literal that isn't inside a UIGradient. Opens the focused value-curve editor.\n\nLiterals nested inside a `UIGradient` props block are deliberately suppressed in favour of the single combined **Edit UIGradient** lens. Only literals whose arguments are themselves literals get a lens — expressions involving variables (`Color3.fromRGB(props.red, …)`) stay inert."
+        },
+        "luix.gradient.previewOnHover": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Renders an inline SVG preview in the hover tooltip:\n\n- **`ColorSequence.new(...)`** → a gradient strip sampled from the literal's stops.\n- **`NumberSequence.new(...)`** → a value-curve graph of the literal's keypoints.\n\nBoth are generated from the literal values you've typed — no network requests, no caching."
+        },
+        "luix.hoverPreviews.enabled": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Show inline SVG previews on hover for: `TweenInfo.new(...)` (easing curve), `e(\"UIPadding\", …)` (box with labelled sides), `e(\"UICorner\", …)` (rounded corner sample), and `e(\"UIStroke\", …)` (stroke thickness sample). All previews are rendered from the literal values you've typed — no network requests."
+        },
+        "luix.sortProps.onSave": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "When enabled, every props table in the document is automatically sorted into the configured category order on save. **Off by default** so saving a teammate's file doesn't reshape their layout. Tables containing `--` comments are skipped to avoid losing the comments. Use the **Sort props by category** code action (lightbulb on any element call) to sort manually without enabling this. Sort order is controlled by `#luix.sortProps.categoryOrder#`."
+        },
+        "luix.sortProps.categoryOrder": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [
+            "Identification",
+            "Layout",
+            "Style",
+            "Visibility",
+            "Image",
+            "Text",
+            "Behavior",
+            "Events",
+            "Refs",
+            "Children",
+            "Other"
+          ],
+          "markdownDescription": "Order in which prop categories are arranged when sorting. Each category contains the props you'd expect:\n\n- **Identification** — Name, ClassName, Key\n- **Layout** — AnchorPoint, Position, Size, AutomaticSize, Rotation, LayoutOrder, ZIndex, SizeConstraint\n- **Style** — BackgroundColor3, BackgroundTransparency, Border*\n- **Visibility** — Visible, ClipsDescendants\n- **Image** — Image, ImageColor3, ImageRectOffset/Size, ScaleType, …\n- **Text** — Text, TextColor3, FontFace, TextSize, RichText, …\n- **Behavior** — Active, Selectable, AutoButtonColor, …\n- **Events** — anything matching `[…Event…]`, `[…Change…]`, or known event names (`Activated`, `MouseEnter`, …)\n- **Refs** — `ref`, `key`\n- **Children** — `[Children]`\n- **Other** — anything else (kept in original order)\n\nReorder the entries to change where each category lands in the sorted output. Unknown category names are ignored."
+        },
+        "luix.rectEditor.codeLensEnabled": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Shows an **Edit sprite rect** CodeLens above every `ImageLabel` / `ImageButton` whose `Image` prop is a literal `rbxassetid://…` string. Clicking it opens a side-panel editor: the asset's thumbnail is fetched at the largest available size (768×768) and a draggable rectangle lets you pick `ImageRectOffset` and `ImageRectSize` visually. Resetting to the whole image strips both props since `ImageRectSize = Vector2.new(0, 0)` is Roblox's default."
+        },
+        "luix.openCloud.apiKey": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Optional Roblox **Open Cloud API key**. When set, the rect editor auto-detects the *native* pixel dimensions of `rbxassetid://…` Image assets by hitting `apis.roblox.com/asset-delivery-api/v1/assetId/{id}`, downloading the asset, and reading the PNG/JPEG header — so coordinates you pick on the thumbnail are correct against the source asset's real pixel space.\n\nCreate a key at [create.roblox.com/dashboard/credentials](https://create.roblox.com/dashboard/credentials) — under **Access Permissions** pick the **legacy-asset** API system and grant the **`legacy-asset:manage`** operation. Results are cached per asset ID in your global state so the API is only called once per asset, ever. Without a key, the editor falls back to thumbnail dimensions and you can type `Source W` / `Source H` manually."
         },
         "luix.indexPersistence.enabled": {
           "type": "boolean",

@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import {
-  PROP_TYPES,
+  getPropType,
   defaultPropsMap,
   findIntroducingClass,
   flattenClassProps,
@@ -35,6 +35,11 @@ export class Color3DocumentColorProvider
       return [];
     }
     const text = document.getText();
+    // Fast reject: files that don't reference Color3 at all skip the
+    // masking step (which builds an N-length boolean array) entirely.
+    if (!text.includes("Color3.")) {
+      return [];
+    }
     const masked = applyMask(text, buildCodeMask(text));
     return extractColorLiterals(masked, text).map((c) => {
       const range = new vscode.Range(
@@ -262,7 +267,7 @@ function buildCustomPropHover(
   const base = component.annotations.extendsClass ?? component.detectedBase;
   if (base && flattenClassProps(base).includes(propName)) {
     lines.push(`Forwarded from \`${base}.${propName}\`.`);
-    const type = PROP_TYPES[propName];
+    const type = getPropType(base, propName);
     if (type) {
       lines.push(`Type: \`${type}\``);
     }
@@ -342,10 +347,12 @@ async function tryAssetHover(
 
 function collectKnownProps(component: DocumentComponentInfo): string[] {
   const out: string[] = [];
+  const known = new Set<string>();
   const push = (xs: string[] | undefined) => {
     if (!xs) return;
     for (const x of xs) {
-      if (!out.includes(x)) {
+      if (!known.has(x)) {
+        known.add(x);
         out.push(x);
       }
     }
@@ -363,7 +370,7 @@ function buildPropHoverMarkdown(
   className: string,
   propName: string
 ): vscode.MarkdownString {
-  const type = PROP_TYPES[propName];
+  const type = getPropType(className, propName);
   const introduced = findIntroducingClass(className, propName);
   const docsAnchor = introduced ?? className;
   const docsUrl = `https://create.roblox.com/docs/reference/engine/classes/${docsAnchor}#${propName}`;
@@ -397,6 +404,8 @@ export class CreateElementInlayHintsProvider
     this._onDidChange.event;
   private disposables: vscode.Disposable[] = [];
 
+  private selectionDebounce: NodeJS.Timeout | undefined;
+
   constructor() {
     this.disposables.push(
       vscode.window.onDidChangeTextEditorSelection(() => {
@@ -404,9 +413,19 @@ export class CreateElementInlayHintsProvider
           "inlayHints.scope",
           "ancestors"
         );
-        if (scope !== "all") {
-          this._onDidChange.fire();
+        if (scope === "all") {
+          return;
         }
+        // Cursor moves fire on every keystroke + arrow press. Debounce
+        // by ~80ms so that fast-typing or rapid arrowing doesn't trigger
+        // a re-render per character.
+        if (this.selectionDebounce) {
+          clearTimeout(this.selectionDebounce);
+        }
+        this.selectionDebounce = setTimeout(() => {
+          this.selectionDebounce = undefined;
+          this._onDidChange.fire();
+        }, 80);
       }),
       vscode.workspace.onDidChangeConfiguration((e) => {
         if (configChangeAffects(e, "inlayHints")) {
@@ -486,6 +505,10 @@ export class CreateElementInlayHintsProvider
   }
 
   dispose(): void {
+    if (this.selectionDebounce) {
+      clearTimeout(this.selectionDebounce);
+      this.selectionDebounce = undefined;
+    }
     for (const d of this.disposables) {
       d.dispose();
     }

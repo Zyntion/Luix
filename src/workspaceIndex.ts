@@ -107,6 +107,7 @@ export class WorkspaceIndex implements vscode.Disposable {
   private _onDidChange = new vscode.EventEmitter<void>();
   private _changeTimer: NodeJS.Timeout | undefined;
   private _persistTimer: NodeJS.Timeout | undefined;
+  private _scanTimers = new Map<string, NodeJS.Timeout>();
   private context: vscode.ExtensionContext | undefined;
   /** Fires after the index reaches a new steady state — used by the
    *  Components sidebar to refresh. Debounced so a burst of keystrokes
@@ -152,7 +153,18 @@ export class WorkspaceIndex implements vscode.Disposable {
         if (isExcluded(e.document.uri, getExcludedDirs())) {
           return;
         }
-        this.scanDocument(e.document);
+        const key = e.document.uri.toString();
+        const existing = this._scanTimers.get(key);
+        if (existing) {
+          clearTimeout(existing);
+        }
+        this._scanTimers.set(
+          key,
+          setTimeout(() => {
+            this._scanTimers.delete(key);
+            this.scanDocument(e.document);
+          }, 200)
+        );
       }),
       vscode.workspace.onDidChangeConfiguration((e) => {
         if (
@@ -451,6 +463,10 @@ export class WorkspaceIndex implements vscode.Disposable {
       clearTimeout(this._changeTimer);
       this._changeTimer = undefined;
     }
+    for (const t of this._scanTimers.values()) {
+      clearTimeout(t);
+    }
+    this._scanTimers.clear();
     this._onDidChange.dispose();
   }
 }

@@ -23,9 +23,21 @@ export interface ClassDef {
 //     `HorizontalAlignment`, etc. via a `UILayout` base.
 export const classHierarchy: Record<string, ClassDef> = {
   // ---- roots ----
-  Instance: { own: ["Name"] },
+  Instance: { own: ["Archivable", "Name"] },
 
-  GuiBase2d: { inherits: "Instance", own: ["AutoLocalize"] },
+  GuiBase2d: {
+    inherits: "Instance",
+    own: [
+      "AutoLocalize",
+      "RootLocalizationTable",
+      "SelectionBehaviorDown",
+      "SelectionBehaviorLeft",
+      "SelectionBehaviorRight",
+      "SelectionBehaviorUp",
+      "SelectionGroup",
+    ],
+    events: ["SelectionChanged"],
+  },
 
   // ---- 2D UI base ----
   GuiObject: {
@@ -40,6 +52,7 @@ export const classHierarchy: Record<string, ClassDef> = {
       "BorderMode",
       "BorderSizePixel",
       "ClipsDescendants",
+      "InputSink",
       "Interactable",
       "LayoutOrder",
       "NextSelectionDown",
@@ -79,7 +92,14 @@ export const classHierarchy: Record<string, ClassDef> = {
   // Synthetic level: shared by TextButton and ImageButton.
   GuiButton: {
     inherits: "GuiObject",
-    own: ["AutoButtonColor", "Modal", "Selected"],
+    own: [
+      "AutoButtonColor",
+      "HoverHapticEffect",
+      "Modal",
+      "PressHapticEffect",
+      "Selected",
+      "Style",
+    ],
     events: [
       "Activated",
       "MouseButton1Click",
@@ -92,7 +112,7 @@ export const classHierarchy: Record<string, ClassDef> = {
   },
 
   // ---- Frame family ----
-  Frame: { inherits: "GuiObject", own: [] },
+  Frame: { inherits: "GuiObject", own: ["Style"] },
 
   ScrollingFrame: {
     inherits: "GuiObject",
@@ -129,7 +149,17 @@ export const classHierarchy: Record<string, ClassDef> = {
 
   VideoFrame: {
     inherits: "GuiObject",
-    own: ["Looped", "Playing", "TimePosition", "Video", "Volume"],
+    own: [
+      "Looped",
+      "MaximumResolution",
+      "Playing",
+      "RollOffMaxDistance",
+      "RollOffMinDistance",
+      "RollOffMode",
+      "TimePosition",
+      "Video",
+      "Volume",
+    ],
   },
 
   CanvasGroup: {
@@ -149,6 +179,7 @@ export const classHierarchy: Record<string, ClassDef> = {
       "FontFace",
       "LineHeight",
       "MaxVisibleGraphemes",
+      "OpenTypeFeatures",
       "RichText",
       "Text",
       "TextColor3",
@@ -176,6 +207,7 @@ export const classHierarchy: Record<string, ClassDef> = {
       "FontFace",
       "LineHeight",
       "MaxVisibleGraphemes",
+      "OpenTypeFeatures",
       "RichText",
       "Text",
       "TextColor3",
@@ -193,23 +225,35 @@ export const classHierarchy: Record<string, ClassDef> = {
   },
 
   TextBox: {
-    inherits: "TextLabel",
+    inherits: "GuiObject",
     own: [
       "ClearTextOnFocus",
       "CursorPosition",
+      "FontFace",
+      "LineHeight",
+      "MaxVisibleGraphemes",
       "MultiLine",
+      "OpenTypeFeatures",
       "PlaceholderColor3",
       "PlaceholderText",
+      "RichText",
       "SelectionStart",
       "ShowNativeInput",
+      "Text",
+      "TextColor3",
+      "TextDirection",
       "TextEditable",
+      "TextScaled",
+      "TextSize",
+      "TextStrokeColor3",
+      "TextStrokeTransparency",
+      "TextTransparency",
+      "TextTruncate",
+      "TextWrapped",
+      "TextXAlignment",
+      "TextYAlignment",
     ],
-    events: [
-      "Focused",
-      "FocusLost",
-      "ReturnPressedFromOnScreenKeyboard",
-      "TextChanged",
-    ],
+    events: ["Focused", "FocusLost", "ReturnPressedFromOnScreenKeyboard"],
   },
 
   // ---- Image family ----
@@ -261,6 +305,7 @@ export const classHierarchy: Record<string, ClassDef> = {
       "ResetOnSpawn",
       "SafeAreaCompatibility",
       "ScreenInsets",
+      "TabKeyboardNavigation",
       "ZIndexBehavior",
     ],
   },
@@ -269,22 +314,23 @@ export const classHierarchy: Record<string, ClassDef> = {
     inherits: "Instance",
     own: [
       "Active",
+      "Adornee",
       "AlwaysOnTop",
       "Brightness",
       "ClipsDescendants",
-      "DistanceLowerLimit",
       "DistanceStep",
-      "DistanceUpperLimit",
       "Enabled",
       "ExtentsOffset",
       "ExtentsOffsetWorldSpace",
       "LightInfluence",
       "MaxDistance",
       "PlayerToHideFrom",
+      "ResetOnSpawn",
       "Size",
       "SizeOffset",
       "StudsOffset",
       "StudsOffsetWorldSpace",
+      "TabKeyboardNavigation",
       "ZIndexBehavior",
     ],
   },
@@ -292,6 +338,7 @@ export const classHierarchy: Record<string, ClassDef> = {
   SurfaceGui: {
     inherits: "Instance",
     own: [
+      "Active",
       "Adornee",
       "AlwaysOnTop",
       "Brightness",
@@ -303,6 +350,7 @@ export const classHierarchy: Record<string, ClassDef> = {
       "PixelsPerStud",
       "ResetOnSpawn",
       "SizingMode",
+      "TabKeyboardNavigation",
       "ToolPunchThroughDistance",
       "ZIndexBehavior",
     ],
@@ -320,11 +368,15 @@ export const classHierarchy: Record<string, ClassDef> = {
     inherits: "Instance",
     own: [
       "ApplyStrokeMode",
+      "BorderOffset",
+      "BorderStrokePosition",
       "Color",
       "Enabled",
       "LineJoinMode",
+      "StrokeSizingMode",
       "Thickness",
       "Transparency",
+      "ZIndex",
     ],
   },
 
@@ -407,7 +459,7 @@ const propsCache = new Map<string, string[]>();
 
 export function flattenClassProps(
   className: string,
-  seen: Set<string> = new Set()
+  seen: Set<string> = new Set(),
 ): string[] {
   if (seen.has(className)) {
     return [];
@@ -429,17 +481,21 @@ export function flattenClassProps(
     }
     return [];
   }
-  const inherited = def.inherits
-    ? flattenClassProps(def.inherits, seen)
-    : [];
+  const inherited = def.inherits ? flattenClassProps(def.inherits, seen) : [];
+  // Use a Set for O(1) dedup. The prior `out.includes(p)` was O(N²) on
+  // classes with many props (GuiObject + TextLabel + TextButton inherit
+  // chain regularly exceeds 50 props).
   const out: string[] = [];
+  const known = new Set<string>();
   for (const p of inherited) {
-    if (!out.includes(p)) {
+    if (!known.has(p)) {
+      known.add(p);
       out.push(p);
     }
   }
   for (const p of def.own) {
-    if (!out.includes(p)) {
+    if (!known.has(p)) {
+      known.add(p);
       out.push(p);
     }
   }
@@ -453,7 +509,7 @@ const eventsCache = new Map<string, string[]>();
 
 export function flattenClassEvents(
   className: string,
-  seen: Set<string> = new Set()
+  seen: Set<string> = new Set(),
 ): string[] {
   if (seen.has(className)) {
     return [];
@@ -474,17 +530,18 @@ export function flattenClassEvents(
     }
     return [];
   }
-  const inherited = def.inherits
-    ? flattenClassEvents(def.inherits, seen)
-    : [];
+  const inherited = def.inherits ? flattenClassEvents(def.inherits, seen) : [];
   const out: string[] = [];
+  const known = new Set<string>();
   for (const e of inherited) {
-    if (!out.includes(e)) {
+    if (!known.has(e)) {
+      known.add(e);
       out.push(e);
     }
   }
   for (const e of def.events ?? []) {
-    if (!out.includes(e)) {
+    if (!known.has(e)) {
+      known.add(e);
       out.push(e);
     }
   }
@@ -500,7 +557,7 @@ export function flattenClassEvents(
  */
 export function findIntroducingClass(
   className: string,
-  propName: string
+  propName: string,
 ): string | undefined {
   let current: string | undefined = className;
   while (current) {
@@ -519,7 +576,7 @@ export function findIntroducingClass(
 // Built-in defaults derived from the hierarchy. Same flat shape downstream
 // code already expects (Record<string, string[]>).
 export const defaultPropsMap: Record<string, string[]> = Object.fromEntries(
-  Object.keys(classHierarchy).map((name) => [name, flattenClassProps(name)])
+  Object.keys(classHierarchy).map((name) => [name, flattenClassProps(name)]),
 );
 
 // ============================================================================
@@ -560,9 +617,10 @@ export const PROP_TYPES: Record<string, string> = {
   PageSize: "UDim2",
   Position: "UDim2",
   Size: "UDim2",
-  StudsOffset: "Vector3",
+  TileSize: "UDim2",
 
   // UDim
+  BorderOffset: "UDim",
   ColumnSpacing: "UDim",
   CornerRadius: "UDim",
   Padding: "UDim",
@@ -581,12 +639,16 @@ export const PROP_TYPES: Record<string, string> = {
   ImageRectSize: "Vector2",
   MaxSize: "Vector2",
   MinSize: "Vector2",
+  Offset: "Vector2",
   SizeOffset: "Vector2",
-  StudsOffsetWorldSpace: "Vector3",
-  TileSize: "UDim2",
 
   // Vector3
   LightDirection: "Vector3",
+  StudsOffset: "Vector3",
+  StudsOffsetWorldSpace: "Vector3",
+
+  // Rect
+  SliceCenter: "Rect",
 
   // number
   AspectRatio: "number",
@@ -598,8 +660,9 @@ export const PROP_TYPES: Record<string, string> = {
   DistanceLowerLimit: "number",
   DistanceStep: "number",
   DistanceUpperLimit: "number",
-  GrowRatio: "number",
+  FillDirectionMaxCells: "number",
   GroupTransparency: "number",
+  GrowRatio: "number",
   ImageTransparency: "number",
   LayoutOrder: "number",
   LightInfluence: "number",
@@ -609,6 +672,8 @@ export const PROP_TYPES: Record<string, string> = {
   MaxVisibleGraphemes: "number",
   MinTextSize: "number",
   PixelsPerStud: "number",
+  RollOffMaxDistance: "number",
+  RollOffMinDistance: "number",
   Rotation: "number",
   Scale: "number",
   ScrollBarImageTransparency: "number",
@@ -630,6 +695,7 @@ export const PROP_TYPES: Record<string, string> = {
   Active: "boolean",
   AlwaysOnTop: "boolean",
   Animated: "boolean",
+  Archivable: "boolean",
   AutoButtonColor: "boolean",
   AutoLocalize: "boolean",
   Circular: "boolean",
@@ -652,7 +718,9 @@ export const PROP_TYPES: Record<string, string> = {
   ScrollWheelInputEnabled: "boolean",
   Selectable: "boolean",
   Selected: "boolean",
+  SelectionGroup: "boolean",
   ShowNativeInput: "boolean",
+  TabKeyboardNavigation: "boolean",
   TextEditable: "boolean",
   TextScaled: "boolean",
   TextWrapped: "boolean",
@@ -666,6 +734,7 @@ export const PROP_TYPES: Record<string, string> = {
   Image: "string",
   MidImage: "string",
   Name: "string",
+  OpenTypeFeatures: "string",
   PlaceholderText: "string",
   PressedImage: "string",
   Text: "string",
@@ -675,33 +744,56 @@ export const PROP_TYPES: Record<string, string> = {
   // Font (struct)
   FontFace: "Font",
 
-  // Enum.* — generic-enum templates rendered as `Enum.<X>.${1}`
+  // Instance refs
+  Adornee: "Instance",
+  CurrentCamera: "Camera",
+  NextSelectionDown: "GuiObject",
+  NextSelectionLeft: "GuiObject",
+  NextSelectionRight: "GuiObject",
+  NextSelectionUp: "GuiObject",
+  PlayerToHideFrom: "Player",
+  RootLocalizationTable: "LocalizationTable",
+  SelectionImageObject: "GuiObject",
+
+  // Enum.* — generic-enum templates rendered as Enum.<X>.${1}
   ApplyStrokeMode: "Enum.ApplyStrokeMode",
   AspectType: "Enum.AspectType",
   AutomaticCanvasSize: "Enum.AutomaticSize",
   AutomaticSize: "Enum.AutomaticSize",
   BorderMode: "Enum.BorderMode",
+  BorderStrokePosition: "Enum.BorderStrokePosition",
   DominantAxis: "Enum.DominantAxis",
   EasingDirection: "Enum.EasingDirection",
   EasingStyle: "Enum.EasingStyle",
   ElasticBehavior: "Enum.ElasticBehavior",
+  Face: "Enum.NormalId",
   FillDirection: "Enum.FillDirection",
   FlexMode: "Enum.UIFlexMode",
   HorizontalAlignment: "Enum.HorizontalAlignment",
   HorizontalFlex: "Enum.UIFlexAlignment",
   HorizontalScrollBarInset: "Enum.ScrollBarInset",
+  HoverHapticEffect: "Enum.HapticEffect",
+  InputSink: "Enum.InputSink",
   ItemLineAlignment: "Enum.ItemLineAlignment",
   LineJoinMode: "Enum.LineJoinMode",
   MajorAxis: "Enum.TableMajorAxis",
+  MaximumResolution: "Enum.VideoSampleSize",
+  PressHapticEffect: "Enum.HapticEffect",
   ResampleMode: "Enum.ResamplerMode",
+  RollOffMode: "Enum.RollOffMode",
   SafeAreaCompatibility: "Enum.SafeAreaCompatibility",
   ScaleType: "Enum.ScaleType",
   ScreenInsets: "Enum.ScreenInsets",
   ScrollingDirection: "Enum.ScrollingDirection",
+  SelectionBehaviorDown: "Enum.SelectionBehavior",
+  SelectionBehaviorLeft: "Enum.SelectionBehavior",
+  SelectionBehaviorRight: "Enum.SelectionBehavior",
+  SelectionBehaviorUp: "Enum.SelectionBehavior",
   SizeConstraint: "Enum.SizeConstraint",
   SizingMode: "Enum.SurfaceGuiSizingMode",
   SortOrder: "Enum.SortOrder",
   StartCorner: "Enum.StartCorner",
+  StrokeSizingMode: "Enum.StrokeSizingMode",
   TextDirection: "Enum.TextDirection",
   TextTruncate: "Enum.TextTruncate",
   TextXAlignment: "Enum.TextXAlignment",
@@ -712,6 +804,86 @@ export const PROP_TYPES: Record<string, string> = {
   VerticalScrollBarPosition: "Enum.VerticalScrollBarPosition",
   ZIndexBehavior: "Enum.ZIndexBehavior",
 };
+
+// ============================================================================
+// Per-class type overrides
+//
+// Some prop names are reused across classes with DIFFERENT types. The
+// canonical case is `Style`:
+//   - Frame.Style      → Enum.FrameStyle
+//   - GuiButton.Style  → Enum.ButtonStyle  (inherited by TextButton, ImageButton)
+//
+// Looking up by prop name alone (`PROP_TYPES.Style`) can only return one
+// answer, which would always be wrong for half of the call sites. The
+// override map below is keyed by the class that *defines* the divergent
+// type — `getPropType(className, propName)` walks the class hierarchy
+// from the leaf upward, returning the first override that matches and
+// falling back to the global `PROP_TYPES` map.
+//
+// To handle a future conflict, add another entry like:
+//   GuiObject: { Foo: "Enum.SomeOtherFoo" },
+// — the closest ancestor wins, so leaf-level overrides take precedence.
+// ============================================================================
+export const PROP_TYPE_OVERRIDES: Record<string, Record<string, string>> = {
+  Frame: {
+    Style: "Enum.FrameStyle",
+  },
+  GuiButton: {
+    // Inherited by TextButton + ImageButton via the class hierarchy
+    Style: "Enum.ButtonStyle",
+  },
+  UIStroke: {
+    Color: "Color3",
+    Transparency: "number",
+  },
+  UIGradient: {
+    Color: "ColorSequence",
+    Transparency: "NumberSequence",
+  },
+};
+
+/**
+ * Resolve a prop's Roblox type, honouring per-class overrides defined
+ * in `PROP_TYPE_OVERRIDES`. Walks the class hierarchy from the supplied
+ * class up to its roots, returning the first override that matches the
+ * prop name. Falls back to the global `PROP_TYPES` map when no override
+ * applies (or when `className` is undefined, which is the case for
+ * custom components where we only know the prop name).
+ */
+// Memoize per (className, propName) — the class hierarchy and
+// PROP_TYPE_OVERRIDES are static at module load, so a hit answer is
+// permanent. We use a sentinel for "no value" so `undefined` results
+// still cache and avoid re-walking the inheritance chain.
+const getPropTypeCache = new Map<string, string | typeof NO_TYPE>();
+const NO_TYPE = Symbol("no-type");
+
+export function getPropType(
+  className: string | undefined,
+  propName: string,
+): string | undefined {
+  const key = `${className ?? ""}|${propName}`;
+  const hit = getPropTypeCache.get(key);
+  if (hit !== undefined) {
+    return hit === NO_TYPE ? undefined : hit;
+  }
+  let result: string | undefined;
+  if (className) {
+    let cls: string | undefined = className;
+    while (cls) {
+      const override = PROP_TYPE_OVERRIDES[cls]?.[propName];
+      if (override !== undefined) {
+        result = override;
+        break;
+      }
+      cls = classHierarchy[cls]?.inherits;
+    }
+  }
+  if (result === undefined) {
+    result = PROP_TYPES[propName];
+  }
+  getPropTypeCache.set(key, result === undefined ? NO_TYPE : result);
+  return result;
+}
 
 // Snippet templates per type. `${1:…}`, `${2:…}` become tab stops; the
 // caller appends `$0` (and a `,` if value-with-comma mode) after the
@@ -727,6 +899,9 @@ export const TYPE_SNIPPETS: Record<string, string> = {
   string: '"${1}"',
   boolean: "${1|true,false|}",
   Font: 'Font.fromName("${1:Montserrat}", Enum.FontWeight.${2:Regular})',
+  Rect: "Rect.new(${1:0}, ${2:0}, ${3:0}, ${4:0})",
+  ColorSequence: "ColorSequence.new(${1})",
+  NumberSequence: "NumberSequence.new(${1})",
 };
 
 export function renderTypeSnippet(typeName: string): string | undefined {
@@ -760,6 +935,7 @@ export const ANNOTATION_TYPE_HINTS = [
   "Region3",
   "BrickColor",
   "Instance",
+  "LocalizationTable",
   // Primitives
   "number",
   "string",

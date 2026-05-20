@@ -51,6 +51,7 @@ import {
   findIntroducingClass,
   flattenClassEvents,
   flattenClassProps,
+  getPropType,
   renderTypeSnippet,
 } from "./data";
 import { collectLocalBindings } from "./parser";
@@ -79,6 +80,21 @@ import {
   wallyInstall,
 } from "./wally";
 import { pickFrameworkAndScaffold, scaffoldComponent } from "./scaffolds";
+import {
+  GradientCodeLensProvider,
+  GradientEditorManager,
+  GradientHoverProvider,
+} from "./gradient";
+import {
+  RectCodeLensProvider,
+  RectEditorManager,
+  purgeAllCachedAssetDims,
+} from "./rect";
+import { UIHoverPreviewsProvider } from "./hoverPreviews";
+import {
+  SortPropsCodeActionProvider,
+  SortPropsOnSaveListener,
+} from "./sortProps";
 
 export function activate(context: vscode.ExtensionContext) {
   const selector: vscode.DocumentSelector = [
@@ -258,6 +274,51 @@ export function activate(context: vscode.ExtensionContext) {
     frameStatsLens,
     vscode.languages.registerCodeLensProvider(selector, frameStatsLens)
   );
+
+  // Gradient editor — CodeLens above each `ColorSequence.new(...)`, a
+  // hover-preview of the gradient strip, and a webview panel with
+  // draggable stops + per-stop colour picker.
+  const gradientLens = new GradientCodeLensProvider();
+  const gradientEditor = new GradientEditorManager(context);
+  context.subscriptions.push(
+    gradientLens,
+    gradientEditor,
+    vscode.languages.registerCodeLensProvider(selector, gradientLens),
+    vscode.languages.registerHoverProvider(
+      selector,
+      new GradientHoverProvider()
+    ),
+    // Visual hover previews for TweenInfo, UIPadding, UICorner, UIStroke.
+    vscode.languages.registerHoverProvider(
+      selector,
+      new UIHoverPreviewsProvider()
+    ),
+    vscode.commands.registerCommand(
+      "luix.openGradientEditor",
+      (uri: vscode.Uri, range: vscode.Range, mode?: "color" | "number") => {
+        gradientEditor.open(uri, range, mode ?? "color");
+      }
+    )
+  );
+
+  // Rect editor — CodeLens "Edit sprite rect" above every
+  // ImageLabel/ImageButton whose Image prop is a literal rbxassetid.
+  // Opens a side-panel editor showing the actual thumbnail with a
+  // draggable rectangle for picking ImageRectOffset/ImageRectSize.
+  const rectLens = new RectCodeLensProvider();
+  const rectEditor = new RectEditorManager(context);
+  context.subscriptions.push(
+    rectLens,
+    rectEditor,
+    vscode.languages.registerCodeLensProvider(selector, rectLens),
+    vscode.commands.registerCommand(
+      "luix.openRectEditor",
+      (uri: vscode.Uri, range: vscode.Range) => {
+        rectEditor.open(uri, range);
+      }
+    )
+  );
+
   // Color3-to-palette extractor — code action on any Color3 literal.
   context.subscriptions.push(
     vscode.languages.registerCodeActionsProvider(
@@ -268,6 +329,20 @@ export function activate(context: vscode.ExtensionContext) {
           Color3PaletteExtractorProvider.providedCodeActionKinds,
       }
     )
+  );
+
+  // Sort props by category — code action, plus an opt-in on-save formatter
+  // (luix.sortProps.onSave, default off).
+  context.subscriptions.push(
+    vscode.languages.registerCodeActionsProvider(
+      selector,
+      new SortPropsCodeActionProvider(),
+      {
+        providedCodeActionKinds:
+          SortPropsCodeActionProvider.providedCodeActionKinds,
+      }
+    ),
+    new SortPropsOnSaveListener()
   );
 
   // Workspace-wide diagnostic aggregator. The summary surfaces through
@@ -450,10 +525,15 @@ export function activate(context: vscode.ExtensionContext) {
         );
         if (choice !== "Purge") return;
         await purgeAllThumbnails(context);
+        const dimsRemoved = await purgeAllCachedAssetDims(context);
         imageGutter.clearAllDecorations();
         workspaceTreeProvider.refreshCache();
+        const dimsNote =
+          dimsRemoved > 0
+            ? ` (also cleared ${dimsRemoved} cached asset dimension${dimsRemoved === 1 ? "" : "s"})`
+            : "";
         void vscode.window.showInformationMessage(
-          "Luix: image preview cache purged."
+          `Luix: image preview cache purged${dimsNote}.`
         );
       }
     ),
@@ -589,6 +669,7 @@ export const _internal = {
 export const _testing = {
   PROP_TYPES,
   TYPE_SNIPPETS,
+  getPropType,
   renderTypeSnippet,
   classHierarchy,
   flattenClassProps,

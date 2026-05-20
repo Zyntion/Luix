@@ -79,7 +79,9 @@ async function loadDump(
   }
   // 2) Fetch.
   try {
-    const res = await fetch(API_DUMP_URL);
+    const res = await fetch(API_DUMP_URL, {
+      signal: AbortSignal.timeout(15_000),
+    });
     if (!res.ok) return undefined;
     const text = await res.text();
     // Validate it parses before writing.

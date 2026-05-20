@@ -616,6 +616,12 @@ export class RichTextColorProvider implements vscode.DocumentColorProvider {
       return [];
     }
     const text = document.getText();
+    // Fast reject: only files that actually contain RichText tag chars
+    // can have colour-bearing attributes. Cheap O(N) scan instead of a
+    // full regex walk for files that have none.
+    if (!text.includes("<")) {
+      return [];
+    }
     const out: vscode.ColorInformation[] = [];
     // Find each `<font|stroke|mark …>` open tag; within its attribute
     // span, find every `color="…"` / `color='…'`.

@@ -271,10 +271,17 @@ suite("Class hierarchy", () => {
     assert.ok(gui.own.includes("Size"));
   });
 
-  test("Frame inherits from GuiObject and adds nothing of its own", () => {
+  test("Frame inherits from GuiObject and adds Style", () => {
     const frame = _testing.classHierarchy.Frame;
     assert.strictEqual(frame.inherits, "GuiObject");
-    assert.deepStrictEqual(frame.own, []);
+    // Frame's own `Style` prop is type `Enum.FrameStyle` (distinct from
+    // GuiButton's `Style` → `Enum.ButtonStyle`); resolved via
+    // `PROP_TYPE_OVERRIDES`.
+    assert.deepStrictEqual(frame.own, ["Style"]);
+    assert.strictEqual(
+      _testing.getPropType("Frame", "Style"),
+      "Enum.FrameStyle"
+    );
   });
 
   test("TextButton chains inheritance: GuiObject → GuiButton → TextButton", () => {
@@ -365,6 +372,44 @@ suite("PROP_TYPES coverage", () => {
   test("Size and Position are UDim2", () => {
     assert.strictEqual(_testing.PROP_TYPES.Size, "UDim2");
     assert.strictEqual(_testing.PROP_TYPES.Position, "UDim2");
+  });
+
+  test("Style resolves to the right enum per class", () => {
+    // Frame.Style → Enum.FrameStyle
+    assert.strictEqual(
+      _testing.getPropType("Frame", "Style"),
+      "Enum.FrameStyle"
+    );
+    // GuiButton.Style → Enum.ButtonStyle (and inherited subclasses)
+    assert.strictEqual(
+      _testing.getPropType("GuiButton", "Style"),
+      "Enum.ButtonStyle"
+    );
+    assert.strictEqual(
+      _testing.getPropType("TextButton", "Style"),
+      "Enum.ButtonStyle"
+    );
+    assert.strictEqual(
+      _testing.getPropType("ImageButton", "Style"),
+      "Enum.ButtonStyle"
+    );
+  });
+
+  test("getPropType falls back to global PROP_TYPES for shared props", () => {
+    // BackgroundColor3 has no override — same answer everywhere.
+    assert.strictEqual(
+      _testing.getPropType("Frame", "BackgroundColor3"),
+      "Color3"
+    );
+    assert.strictEqual(
+      _testing.getPropType("TextButton", "BackgroundColor3"),
+      "Color3"
+    );
+    // No className supplied at all → still resolves via the global map.
+    assert.strictEqual(
+      _testing.getPropType(undefined, "Position"),
+      "UDim2"
+    );
   });
 });
 
@@ -647,10 +692,11 @@ suite("Events (1.5)", () => {
     assert.ok(events.includes("MouseEnter"));
   });
 
-  test("TextBox has TextChanged", () => {
+  test("TextBox has Focused / FocusLost / ReturnPressedFromOnScreenKeyboard", () => {
     const events = _testing.flattenClassEvents("TextBox");
-    assert.ok(events.includes("TextChanged"));
     assert.ok(events.includes("Focused"));
+    assert.ok(events.includes("FocusLost"));
+    assert.ok(events.includes("ReturnPressedFromOnScreenKeyboard"));
   });
 
   test("Frame doesn't have button-only events", () => {

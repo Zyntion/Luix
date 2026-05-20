@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import { PROP_TYPES, defaultPropsMap, flattenClassProps } from "./data";
+import { getPropType, defaultPropsMap, flattenClassProps } from "./data";
 import {
   AliasPartition,
   applyMask,
@@ -33,6 +33,7 @@ export const DIAGNOSTIC_CODE = {
   NumericRange: "luix.numeric-range",
   TextScaledGotcha: "luix.text-scaled-gotcha",
   LowContrast: "luix.low-contrast",
+  UnusedProp: "luix.unused-prop",
 } as const;
 
 export class DiagnosticsManager implements vscode.Disposable {
@@ -60,7 +61,8 @@ export class DiagnosticsManager implements vscode.Disposable {
           configChangeAffects(e, "autoImport") ||
           configChangeAffects(e, "propValidation") ||
           configChangeAffects(e, "richText") ||
-          configChangeAffects(e, "contrastWarnings")
+          configChangeAffects(e, "contrastWarnings") ||
+          configChangeAffects(e, "unusedProps")
         ) {
           this.refreshAllOpenDocuments();
         }
@@ -77,6 +79,11 @@ export class DiagnosticsManager implements vscode.Disposable {
   }
 
   private scheduleRefresh(document: vscode.TextDocument): void {
+    // Filter at scheduling time so non-Lua keystrokes don't spin up
+    // (and leak) debounce timers in `debounceTimers` forever.
+    if (document.languageId !== "lua" && document.languageId !== "luau") {
+      return;
+    }
     const key = document.uri.toString();
     const existing = this.debounceTimers.get(key);
     if (existing) {
@@ -136,6 +143,9 @@ export class DiagnosticsManager implements vscode.Disposable {
     }
     if (getConfig<boolean>("contrastWarnings.enabled", false)) {
       diagnostics.push(...computeContrastDiagnostics(text, document));
+    }
+    if (getConfig<boolean>("unusedProps.enabled", true)) {
+      diagnostics.push(...computeUnusedPropDiagnostics(text, document));
     }
 
     return diagnostics;
@@ -373,8 +383,10 @@ function computePropValidationDiagnostics(
       const known = new Set(flattenClassProps(call.className));
       for (const entry of entries) {
         if (known.has(entry.key)) {
-          // Check enum type, if we know one.
-          const expected = PROP_TYPES[entry.key];
+          // Check enum type, if we know one. Use class-aware lookup so
+          // props with class-specific types (e.g. Frame.Style vs
+          // GuiButton.Style) get the right expected enum.
+          const expected = getPropType(call.className, entry.key);
           if (expected && expected.startsWith("Enum.")) {
             const valueText = propsBody
               .slice(entry.valueStart, entry.valueEnd)
@@ -889,4 +901,202 @@ function computeMissingRichTextDiagnostics(
     out.push(d);
   }
   return out;
+}
+
+// ============================================================================
+// Unused-prop diagnostic
+//
+// For each component defined in the document, gather its declared props
+// (from the parameter's type annotation or the `@luix-props` comment),
+// then scan the body for `props.<Name>` / `props["<Name>"]` accesses. Any
+// declared prop that's never read is flagged as Unnecessary (greyed-out
+// like an unused-import in TS).
+//
+// Skipped when the component forwards `props` wholesale (e.g.
+// `e(Base, props)`, `for k, v in props do`) since we can't tell which
+// props the downstream code reads.
+// ============================================================================
+function computeUnusedPropDiagnostics(
+  text: string,
+  document: vscode.TextDocument
+): vscode.Diagnostic[] {
+  const out: vscode.Diagnostic[] = [];
+  const aliases = getAliasPartition();
+  const components = scanDocument(text, aliases);
+  const mask = buildCodeMask(text);
+  const masked = applyMask(text, mask);
+
+  for (const component of components.values()) {
+    const paramName = component.paramName;
+    if (
+      !paramName ||
+      component.bodyStart === undefined ||
+      component.bodyEnd === undefined
+    ) {
+      continue;
+    }
+
+    const declared = new Set<string>();
+    if (component.paramTypeFields) {
+      for (const f of component.paramTypeFields) {
+        declared.add(f);
+      }
+    }
+    for (const f of component.annotations.props) {
+      declared.add(f);
+    }
+    if (declared.size === 0) {
+      continue;
+    }
+
+    const bodyMasked = masked.slice(component.bodyStart, component.bodyEnd);
+    const bodyOriginal = text.slice(component.bodyStart, component.bodyEnd);
+    if (forwardsPropsWholesale(bodyMasked, bodyOriginal, paramName)) {
+      continue;
+    }
+
+    const used = collectPropAccesses(bodyMasked, bodyOriginal, paramName);
+
+    // Locate each declared prop's position in the type annotation, if any.
+    const typeAnnotation =
+      component.paramTypeStart !== undefined &&
+      component.paramTypeEnd !== undefined
+        ? masked.slice(component.paramTypeStart, component.paramTypeEnd)
+        : "";
+    const typeAnnotationBase = component.paramTypeStart ?? 0;
+
+    for (const prop of declared) {
+      if (used.has(prop)) {
+        continue;
+      }
+      // Try to find the prop's declaration in the type annotation so
+      // the squiggle/grey-out lands on the field name itself.
+      let range: vscode.Range | undefined;
+      if (typeAnnotation) {
+        const re = new RegExp(
+          `\\b${escapeRegExp(prop)}\\b(?=\\s*\\??\\s*:)`
+        );
+        const m = re.exec(typeAnnotation);
+        if (m) {
+          const startOff = typeAnnotationBase + m.index;
+          range = new vscode.Range(
+            document.positionAt(startOff),
+            document.positionAt(startOff + prop.length)
+          );
+        }
+      }
+      if (!range) {
+        // Fall back to the function definition line.
+        const line = document.lineAt(component.defLineIndex);
+        range = line.range;
+      }
+
+      const d = new vscode.Diagnostic(
+        range,
+        `Prop \`${prop}\` is declared on \`${component.name}\` but never read in its body.`,
+        vscode.DiagnosticSeverity.Hint
+      );
+      d.code = DIAGNOSTIC_CODE.UnusedProp;
+      d.source = "luix";
+      d.tags = [vscode.DiagnosticTag.Unnecessary];
+      out.push(d);
+    }
+  }
+
+  return out;
+}
+
+/**
+ * Returns `true` if the component body uses `paramName` in a way that
+ * prevents us from statically determining which props are read — e.g.
+ * passing the table itself as an argument, iterating it, or indexing
+ * with a non-literal key.
+ */
+function forwardsPropsWholesale(
+  bodyMasked: string,
+  bodyOriginal: string,
+  paramName: string
+): boolean {
+  const pn = escapeRegExp(paramName);
+  const re = new RegExp(`(?<![A-Za-z0-9_])${pn}(?![A-Za-z0-9_])`, "g");
+  const len = bodyMasked.length;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(bodyMasked)) !== null) {
+    // Walk forward without slicing (slicing in a loop turns this into
+    // O(N^2) on large bodies).
+    let i = m.index + paramName.length;
+    while (i < len) {
+      const ch = bodyMasked.charCodeAt(i);
+      // Skip ASCII whitespace inline.
+      if (ch === 32 || ch === 9 || ch === 10 || ch === 13) {
+        i++;
+        continue;
+      }
+      break;
+    }
+    const c = bodyMasked[i];
+    if (c === "." || c === ":") {
+      continue;
+    }
+    if (c === "[") {
+      // Allow only static-string bracket access (handled later in
+      // `collectPropAccesses`). Anything else (computed keys, numeric
+      // indices) is wholesale forwarding.
+      let j = i + 1;
+      while (j < len) {
+        const ch = bodyOriginal.charCodeAt(j);
+        if (ch === 32 || ch === 9 || ch === 10 || ch === 13) {
+          j++;
+          continue;
+        }
+        break;
+      }
+      const opener = bodyOriginal[j];
+      if (opener === '"' || opener === "'" || opener === "`") {
+        continue;
+      }
+      return true;
+    }
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Collect every prop name read off of `paramName`:
+ *   - `paramName.Foo`
+ *   - `paramName["Foo"]` / `paramName['Foo']` / `paramName[\`Foo\`]`
+ */
+function collectPropAccesses(
+  bodyMasked: string,
+  bodyOriginal: string,
+  paramName: string
+): Set<string> {
+  const used = new Set<string>();
+  const pn = escapeRegExp(paramName);
+
+  const dotRe = new RegExp(
+    `(?<![A-Za-z0-9_])${pn}\\.([A-Za-z_][A-Za-z0-9_]*)`,
+    "g"
+  );
+  let m: RegExpExecArray | null;
+  while ((m = dotRe.exec(bodyMasked)) !== null) {
+    used.add(m[1]);
+  }
+
+  // Bracket access with a static string key. The masked body has the
+  // string interior blanked, so read from the original text instead.
+  const bracketRe = new RegExp(
+    `(?<![A-Za-z0-9_])${pn}\\s*\\[\\s*(["'\`])([^"'\`\\n]+)\\1\\s*\\]`,
+    "g"
+  );
+  while ((m = bracketRe.exec(bodyOriginal)) !== null) {
+    used.add(m[2]);
+  }
+
+  return used;
+}
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

@@ -33,6 +33,15 @@ export interface DocumentComponentInfo {
    * value is silently ignored — the diagnostic surface flags it.
    */
   hardcodedProps?: Set<string>;
+  /** Identifier of the first parameter — the props table (e.g. "props"). */
+  paramName?: string;
+  /** Offset of the first character inside the function body. */
+  bodyStart?: number;
+  /** Offset just after the function's terminating `end`. */
+  bodyEnd?: number;
+  /** Offset range of the first param's type annotation (after the `:`). */
+  paramTypeStart?: number;
+  paramTypeEnd?: number;
 }
 
 export interface CreateElementCall {
@@ -1066,6 +1075,11 @@ interface FunctionDef {
   paramType?: string;
   /** Identifier of the first parameter, e.g. `props` in `function MyCard(props)`. */
   paramName?: string;
+  /** Offset of the first character of the first parameter's type annotation
+   *  (after the `:`), if any. Used to locate per-field positions for the
+   *  unused-prop diagnostic. */
+  paramTypeStart?: number;
+  paramTypeEnd?: number;
   bodyStart: number;
   bodyEnd: number;
 }
@@ -1073,6 +1087,8 @@ interface FunctionDef {
 interface ParameterListInfo {
   firstParamType?: string;
   firstParamName?: string;
+  firstParamTypeStart?: number;
+  firstParamTypeEnd?: number;
   paramListEnd: number;
 }
 
@@ -1082,6 +1098,7 @@ function parseParameterList(
 ): ParameterListInfo | undefined {
   let i = openParenIdx + 1;
   let firstParamType: string | undefined;
+  let typeRange: { start: number; end: number } | undefined;
 
   while (i < maskedText.length && /\s/.test(maskedText[i])) {
     i++;
@@ -1140,6 +1157,7 @@ function parseParameterList(
       }
       firstParamType = maskedText.slice(typeStart, typeEnd).trim();
       i = typeEnd;
+      typeRange = { start: typeStart, end: typeEnd };
     }
   }
 
@@ -1151,7 +1169,13 @@ function parseParameterList(
     } else if (c === ")") {
       depth--;
       if (depth === 0) {
-        return { firstParamType, firstParamName, paramListEnd: i };
+        return {
+          firstParamType,
+          firstParamName,
+          firstParamTypeStart: typeRange?.start,
+          firstParamTypeEnd: typeRange?.end,
+          paramListEnd: i,
+        };
       }
     }
     i++;
@@ -1185,6 +1209,8 @@ function findFunctionDefinitions(maskedText: string): FunctionDef[] {
         defIdx,
         paramType: sig.firstParamType,
         paramName: sig.firstParamName,
+        paramTypeStart: sig.firstParamTypeStart,
+        paramTypeEnd: sig.firstParamTypeEnd,
         bodyStart,
         bodyEnd,
       });
@@ -1268,6 +1294,11 @@ export function scanDocument(
       annotations,
       detectedBase,
       hardcodedProps,
+      paramName: def.paramName,
+      bodyStart: def.bodyStart,
+      bodyEnd: def.bodyEnd,
+      paramTypeStart: def.paramTypeStart,
+      paramTypeEnd: def.paramTypeEnd,
     });
   }
 

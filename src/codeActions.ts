@@ -637,36 +637,86 @@ export class WrapInCodeActionProvider
     range: vscode.Range | vscode.Selection
   ): vscode.ProviderResult<vscode.CodeAction[]> {
     const text = document.getText();
-    const cursor = document.offsetAt(range.start);
+    const selStart = document.offsetAt(range.start);
+    const selEnd = document.offsetAt(range.end);
     const aliases = getAliasPartition();
     const calls = findAllCreateElementCalls(text, aliases);
-    const match = calls.find(
-      (c) => cursor >= c.aliasStart && cursor <= c.fullEnd
+
+    // Two cases to handle:
+    //
+    //   (a) Cursor / selection within a SINGLE element — wrap that one.
+    //       Strategy: smallest call whose range contains the selection.
+    //
+    //   (b) Selection spans MULTIPLE sibling elements — wrap them as a
+    //       group. Otherwise we'd wrap their common parent, which is
+    //       what the user just complained about.
+    //
+    // Detect (b) by collecting calls *fully inside* the selection, then
+    // keeping only the top-level ones (no other in-selection call
+    // contains them). If at least one such top-level exists, wrap them.
+    // Otherwise fall back to (a).
+    const inSelection = calls.filter(
+      (c) => c.aliasStart >= selStart && c.fullEnd <= selEnd
     );
-    if (!match) {
-      return undefined;
+    const topLevel = inSelection.filter(
+      (c) =>
+        !inSelection.some(
+          (other) =>
+            other !== c &&
+            other.aliasStart < c.aliasStart &&
+            other.fullEnd > c.fullEnd
+        )
+    );
+    topLevel.sort((a, b) => a.aliasStart - b.aliasStart);
+
+    let targets: typeof calls;
+    if (topLevel.length > 0) {
+      targets = topLevel;
+    } else {
+      let match: typeof calls[number] | undefined;
+      for (const c of calls) {
+        if (selStart >= c.aliasStart && selEnd <= c.fullEnd) {
+          if (
+            !match ||
+            c.fullEnd - c.aliasStart < match.fullEnd - match.aliasStart
+          ) {
+            match = c;
+          }
+        }
+      }
+      if (!match) {
+        return undefined;
+      }
+      targets = [match];
     }
-    // Re-detect framework via the alias text. `findAllCreateElementCalls`
-    // doesn't surface the alias on the call object, so we read it from
-    // the source between aliasStart and the class-name token.
+
+    const first = targets[0];
+    const last = targets[targets.length - 1];
+
+    // Framework detection uses the first target's alias — siblings in
+    // the same children list always share an alias anyway.
     const aliasText = text
-      .slice(match.aliasStart, match.classNameStart)
+      .slice(first.aliasStart, first.classNameStart)
       .replace(/[\s("]+$/g, "")
       .trim();
     const spec = findFrameworkForAlias(aliasText);
     const curried = spec?.callShape === "curried";
     const aliasName = aliasText;
 
-    const innerText = text.slice(match.aliasStart, match.fullEnd);
+    const innerText = text.slice(first.aliasStart, last.fullEnd);
     const replaceRange = new vscode.Range(
-      document.positionAt(match.aliasStart),
-      document.positionAt(match.fullEnd)
+      document.positionAt(first.aliasStart),
+      document.positionAt(last.fullEnd)
     );
-    const line = document.lineAt(document.positionAt(match.aliasStart).line);
+    const line = document.lineAt(document.positionAt(first.aliasStart).line);
     const baseIndent = /^[\s]*/.exec(line.text)?.[0] ?? "";
     const stepIndent = "\t";
 
-    const indented = indentLines(innerText, baseIndent + stepIndent);
+    // Only ONE extra step needs to be added — the lines that come after
+    // the slice's first line already carry their original indentation,
+    // and the wrap shifts them all down by exactly one level. The old
+    // `baseIndent + stepIndent` prefix double-indented every line.
+    const indented = indentLines(innerText, stepIndent);
 
     const actions: vscode.CodeAction[] = [];
     for (const kind of ["Frame", "ScrollingFrame", "ListContainer"] as WrapKind[]) {

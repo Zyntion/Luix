@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import {
   ANNOTATION_TYPE_HINTS,
-  PROP_TYPES,
+  getPropType,
   defaultPropsMap,
   flattenClassEvents,
   flattenClassProps,
@@ -629,7 +629,7 @@ function buildItemsForProps(
       name,
       vscode.CompletionItemKind.Property
     );
-    const propType = typeAware ? PROP_TYPES[name] : undefined;
+    const propType = typeAware ? getPropType(className, name) : undefined;
     item.insertText = buildSnippet(name, snippetMode, propType);
     item.detail = propType
       ? `${className} property — ${propType}`

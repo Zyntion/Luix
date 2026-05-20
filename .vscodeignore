@@ -15,6 +15,7 @@ scripts/**
 .vscode-test.mjs
 .yarnrc
 node_modules/**
+**/.DS_Store
 
 # Repo metadata not relevant to extension consumers.
 .gitignore

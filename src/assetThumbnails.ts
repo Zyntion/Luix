@@ -49,9 +49,10 @@ const THUMBNAIL_TTL_FAIL = 60 * 1000;
  * the API is unreachable. Memoised for the session.
  */
 export async function fetchAssetThumbnailUrl(
-  assetId: string
+  assetId: string,
+  size: string = THUMBNAIL_SIZE
 ): Promise<string | null> {
-  const cacheKey = `${assetId}@${THUMBNAIL_SIZE}`;
+  const cacheKey = `${assetId}@${size}`;
   const now = Date.now();
   const cached = thumbnailUrlCache.get(cacheKey);
   if (cached && cached.expires > now) {
@@ -59,9 +60,9 @@ export async function fetchAssetThumbnailUrl(
   }
   const url =
     `https://thumbnails.roblox.com/v1/assets` +
-    `?assetIds=${assetId}&size=${THUMBNAIL_SIZE}&format=Png&isCircular=false`;
+    `?assetIds=${assetId}&size=${size}&format=Png&isCircular=false`;
   try {
-    const res = await fetch(url);
+    const res = await fetch(url, { signal: AbortSignal.timeout(10_000) });
     if (!res.ok) {
       thumbnailUrlCache.set(cacheKey, {
         url: null,
@@ -153,7 +154,7 @@ export async function ensureThumbnailFile(
     return undefined;
   }
   try {
-    const res = await fetch(cdnUrl);
+    const res = await fetch(cdnUrl, { signal: AbortSignal.timeout(15_000) });
     if (!res.ok) {
       return undefined;
     }

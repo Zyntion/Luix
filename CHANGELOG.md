@@ -4,6 +4,180 @@ All notable changes to **Luix** will be documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.4.0]
+
+This release adds three full-fledged visual editors (gradient,
+sprite-rect, plus four hover previews), a new diagnostic, and a
+sort-props action. Editors are marked **Preview** in the UI so
+users know they're still being polished.
+
+### Gradient editor (`luix.gradient.*`)
+
+A single **Edit UIGradient** CodeLens above every
+`e("UIGradient", { … })` element opens a combined side-panel editor
+with Color, Transparency, and Rotation. Standalone
+`ColorSequence.new(...)` and `NumberSequence.new(...)` literals (not
+inside a UIGradient) get a focused per-literal editor instead.
+
+- **Colour ramp** — drag triangle stops, click the strip to add,
+  per-stop colour picker, hover-indicator pill showing the offset.
+- **Transparency curve** — grid canvas with draggable circle stops
+  (X = time, Y = value), envelope shading when non-zero.
+- **Rotation slider** — −180° to 180°, slider + numeric input.
+- **Preview square** — combines colour + transparency + rotation
+  and multiplies by the parent element's `BackgroundColor3`
+  (Roblox's `UIGradient` semantics), so what you see matches what
+  Roblox renders.
+- **Output respects `luix.color3.defaultFormat`** for `fromRGB` /
+  `fromHex` / `new`. Default `Color = ColorSequence.new(white)`,
+  `Transparency = NumberSequence.new(0)`, and `Rotation = 0` are
+  _omitted_ from the written-back props block — no noise.
+- **Hover previews** — `ColorSequence` shows the gradient strip,
+  `NumberSequence` shows the value curve. Toggles:
+  `luix.gradient.codeLensEnabled` (on),
+  `luix.gradient.previewOnHover` (on).
+- **Polish** — `Shift` snaps drag/click to 0.05, hover indicator
+  on strip and curve, scroll-wheel + arrow stepping on numeric
+  fields, decimal input always renders `.` regardless of locale,
+  blur-revert on invalid input.
+
+### Rect editor (`luix.rectEditor.*`)
+
+An **Edit sprite rect** CodeLens appears above every
+`e("ImageLabel" | "ImageButton", { … })` whose `Image` prop is a
+literal `rbxassetid://…`. Opens a side-panel editor:
+
+- Thumbnail fetched from `thumbnails.roblox.com` at the largest
+  available size, with a fallback ladder (768 → 512 → 420 → 256 → 150).
+- Draggable rectangle with 8 resize handles; dimmed mask shows
+  what gets cropped.
+- X / Y / W / H number fields with `Shift` = 10× step.
+- **Aspect-ratio auto-detect** — reads a sibling
+  `UIAspectRatioConstraint` or a fixed-pixel `Size = UDim2.fromOffset(…)`
+  and pre-fills the **Frame aspect** input.
+- **Crop preview overlay** — a dashed yellow box inside the
+  selection showing exactly what `ScaleType.Crop` will actually
+  render given the frame aspect. Hidden for other ScaleTypes.
+- **Native dimension auto-detect via Open Cloud** — when
+  `luix.openCloud.apiKey` is set (key needs the `legacy-asset:manage`
+  permission), the editor hits
+  `apis.roblox.com/asset-delivery-api/v1/assetId/{id}`, downloads the
+  returned CDN location, and reads the PNG/JPEG header to extract the
+  true pixel dimensions. One call per asset, ever — results are
+  persisted to `globalState`.
+- **Source dimensions fallback** — without an API key (or if the
+  lookup fails) the editor uses the thumbnail's natural size and lets
+  you type `Source W` / `Source H` manually. Manual values are also
+  cached per asset, so the typing cost is one-time.
+- **Scroll-to-zoom** — wheel on the canvas zooms (15% – 300%),
+  with a discoverable **🔍 zoom bar** (− / % / +) in the corner.
+- **Rect can exceed source dimensions** — W and H accept up to 4×
+  source; the rect can be dragged past the image edge. Overflow is
+  signalled with a dashed amber border.
+- **Stripped on the "full image" default** — `ImageRectOffset = (0,0)`
+  and `ImageRectSize = (0,0)` are omitted on Apply.
+
+### Unused-prop diagnostic (`luix.unusedProps.enabled`, on by default)
+
+Props declared in a component's parameter type
+(`props: { Foo: …, Bar: … }`) or its `@luix-props` annotation that
+are never read in the body are flagged with the unused-declaration
+grey-out style (`Hint` severity, `Unnecessary` tag — same treatment
+TypeScript uses for unused locals).
+
+Skipped automatically when the body forwards `props` wholesale
+(`e(Base, props)`, `for k, v in props do`, computed-key indexing)
+since static analysis can't determine downstream usage. Squiggle
+lands on the field name inside the type annotation when possible,
+otherwise on the function definition line.
+
+### Visual hover previews (`luix.hoverPreviews.enabled`, on by default)
+
+Inline SVG previews rendered straight from your literal values —
+no network requests, no caching:
+
+- **`TweenInfo.new(...)`** — 240×140 graph of the easing curve.
+  All 12 `EasingStyle` × 4 `EasingDirection` combinations are
+  implemented as math functions. Below the curve: duration,
+  repeat-count, reverses, and delay summary.
+- **`e("UIPadding", { … })`** — box visualisation with the inner
+  content area indented by the configured `PaddingTop` / `Right` /
+  `Bottom` / `Left`. Each non-zero side gets its pixel value labeled.
+- **`e("UICorner", { … })`** — rounded rectangle rendered at the
+  configured `CornerRadius`.
+- **`e("UIStroke", { … })`** — sample box with the stroke applied
+  at the configured `Thickness` / `Color` / `Transparency`.
+
+### Sort props by category (`luix.sortProps.*`)
+
+- **Code action** — Right-click anywhere inside a props table → 💡
+  **Sort props by category**. Reorders props by category (then by
+  canonical order within each category, stable on ties).
+- **Format-on-save** — `luix.sortProps.onSave` (default `false`).
+  When enabled, every props table in the document is sorted on
+  save. Off by default so saving a teammate's file doesn't
+  reshape their layout.
+- **Configurable order** — `luix.sortProps.categoryOrder` (string
+  array) lets you reorder _or remove_ categories. Defaults:
+  Identification → Layout → Style → Visibility → Image → Text →
+  Behavior → Events → Refs → Children → Other.
+- **Computed-key aware** — captures `[React.Event.Activated]`,
+  `[OnEvent "…"]`, `[Children]`, etc. Vide-style plain identifier
+  events (`Activated = function() … end`) are recognised too.
+- **Comment-safe** — tables containing `--` comments are skipped
+  so comments never get detached. Idempotent: re-sorting a sorted
+  table is a no-op (no spurious save edits).
+
+### Per-class prop type overrides
+
+Some Roblox prop names mean different things on different classes
+(e.g. `Frame.Style → Enum.FrameStyle`, but
+`GuiButton.Style → Enum.ButtonStyle`). 1.3.0's global `PROP_TYPES`
+map could only hold one value per prop name and silently picked
+the wrong enum on Frame.
+
+New `PROP_TYPE_OVERRIDES` map keyed by class, plus a
+`getPropType(className, propName)` helper that walks the class
+hierarchy. The hover tooltip, completion value-snippet, and the
+wrong-enum diagnostic now all resolve `Style` (and any future
+conflicts) per-class. Adding more is a one-line entry per class.
+
+### Wrap-in code action — fixes (regressions from 1.3.0)
+
+- **Multi-element selection** — selecting `UIPadding + TextLabel`
+  now wraps _those two siblings_ in a new container, instead of
+  wrapping their parent `Frame` (the previous behaviour found the
+  smallest call containing the selection, which is always the
+  parent for multi-element selections).
+- **Indentation** — wrapped lines no longer get double-indented.
+  The previous `indentLines(text, baseIndent + step)` prepended
+  both the base AND the new step to lines that already had their
+  original indent baked in, producing 4-tab-deep `Name = …` etc.
+
+### Expanded class & prop catalogue ([src/data.ts](src/data.ts))
+
+Built-in `classHierarchy` and `PROP_TYPES` significantly expanded
+to track newer Roblox additions and previously-missing props:
+
+- **GuiBase2d** — `RootLocalizationTable`, `SelectionBehaviorDown/Left/Right/Up`, `SelectionGroup`, `SelectionChanged` event.
+- **GuiObject** — `InputSink`, `NextSelection*`, `SelectionImageObject`.
+- **GuiButton** — `HoverHapticEffect`, `PressHapticEffect`, `Style`.
+- **Frame** — `Style`.
+- **VideoFrame** — `MaximumResolution`, `RollOffMaxDistance/MinDistance/Mode`.
+- **TextLabel / TextButton** — `OpenTypeFeatures`.
+- **TextBox** — re-rooted under `GuiObject` (was `TextLabel`) to
+  match Roblox's actual hierarchy; full text-prop set mirrored.
+- **BillboardGui** — `Adornee`, `ResetOnSpawn`, `TabKeyboardNavigation`.
+- **SurfaceGui** — `Active`, `TabKeyboardNavigation`.
+- **ScreenGui** — `TabKeyboardNavigation`.
+- **UIStroke** — `BorderOffset`, `BorderStrokePosition`, `StrokeSizingMode`, `ZIndex`.
+- **Instance** — `Archivable`.
+- And 40+ new `PROP_TYPES` entries for the above, covering
+  `Rect`, `Camera`, `Player`, `LocalizationTable`, plus several
+  new enum types (`BorderStrokePosition`, `HapticEffect`,
+  `InputSink`, `NormalId`, `RollOffMode`, `SelectionBehavior`,
+  `StrokeSizingMode`, `VideoSampleSize`).
+
 ## [1.3.0]
 
 ### New diagnostics (gated by `luix.propValidation.enabled`, on by default)
@@ -34,7 +208,7 @@ Empty by default; opt-in via user config.
 
 ### Color3 → palette extractor
 
-Cursor on any Color3 literal → 💡 *Save Color3 to `luix.palette`…* —
+Cursor on any Color3 literal → 💡 _Save Color3 to `luix.palette`…_ —
 prompts for a token name and a target (User / Workspace settings).
 The literal is added to `luix.palette` so it surfaces in future
 `Color3.` completions.
@@ -48,7 +222,7 @@ deep` above every meaty subtree. `luix.frameStatsLens.minDescendants`
 ### Workspace-wide validation summary (off by default)
 
 `luix.workspaceValidation.enabled` — the Luix sidebar shows
-*"Project diagnostics — N warnings · M errors across X files"*.
+_"Project diagnostics — N warnings · M errors across X files"_.
 Click jumps to the Problems panel. Aggregates Luix + every other
 publisher's diagnostics.
 
@@ -74,7 +248,7 @@ behavioral difference. Disable to keep Luix offline.
 ### Background — opt-in Roblox API-dump augmentation
 
 `luix.useRobloxApiDump` — fetch the community-maintained
-Mini-API-Dump JSON once a day and *add* any new properties Roblox has
+Mini-API-Dump JSON once a day and _add_ any new properties Roblox has
 shipped to existing classes' completion lists. Additive only — the
 hand-curated built-in data still wins on conflicts.
 
@@ -96,7 +270,7 @@ hand-curated built-in data still wins on conflicts.
 These classes no longer suggest the deprecated `Font` property —
 only `FontFace` shows up in the completion list. The existing
 deprecation diagnostic still catches anyone who writes
-`Font = Enum.Font.X` and offers the *Replace with `FontFace = …`*
+`Font = Enum.Font.X` and offers the _Replace with `FontFace = …`_
 quick-fix.
 
 ### Smarter value completion for Color3 / UDim / Font props
@@ -129,7 +303,7 @@ pre-filled `color="…"` regardless of intent.
 - Prop completion no longer doubles trailing commas: typing `Bac,`
   then accepting `BackgroundColor3` produces a single trailing comma
   with the cursor after it, regardless of the existing `,`.
-- Prop / anchor-preset completions are now gated to *key* position —
+- Prop / anchor-preset completions are now gated to _key_ position —
   typing `FontFace = Font.|` no longer surfaces `BackgroundColor3` /
   `anchor:c` / etc. alongside the font constructors.
 - All settings now live under the `luix.*` prefix. The silent
@@ -164,14 +338,14 @@ Kills the constant AnchorPoint mental math.
 ### AnchorPoint auto-detect
 
 When `Position` uses `UDim2.fromScale(0.5, …)` / `UDim2.new(1, 0, 1, 0)`
-/ similar *without* a matching `AnchorPoint`, you get an Information-
-level diagnostic with a *Add `AnchorPoint = Vector2.new(0.5, 0.5)`*
+/ similar _without_ a matching `AnchorPoint`, you get an Information-
+level diagnostic with a _Add `AnchorPoint = Vector2.new(0.5, 0.5)`_
 quick-fix that inserts the correct AnchorPoint at the right indentation.
 
 ### Wrap-in code actions
 
-Cursor in any element call → lightbulb offers *Wrap in Frame* / *Wrap
-in ScrollingFrame* / *Wrap in Frame + UIListLayout*. Framework-aware —
+Cursor in any element call → lightbulb offers _Wrap in Frame_ / _Wrap
+in ScrollingFrame_ / _Wrap in Frame + UIListLayout_. Framework-aware —
 parens form for React/Roact, curried form (with `[Children] = { … }`)
 for Fusion, inline children for Vide.
 
@@ -236,8 +410,8 @@ flips your codebase from hex to RGB or vice versa.
 
 ### Convert Color3 between formats
 
-Cursor on any Color3 literal → lightbulb offers *Convert to
-`Color3.fromRGB(...)` / `fromHex(...)` / `new(...)` / `fromHSV(...)`*.
+Cursor on any Color3 literal → lightbulb offers _Convert to
+`Color3.fromRGB(...)` / `fromHex(...)` / `new(...)` / `fromHSV(...)`_.
 Resolves the actual color and rewrites the constructor.
 
 ### Reference CodeLens
@@ -277,7 +451,7 @@ RichText only supports two formats.
 If a props table sets `Text = "…<font…>…"` (or any other RichText tag)
 but doesn't also set `RichText = true`, Roblox renders the tags as
 literal characters. Luix now flags this with a Warning on the `Text`
-key and offers a *Set `RichText = true`* quick-fix that inserts the
+key and offers a _Set `RichText = true`_ quick-fix that inserts the
 line right above. Only fires on string-literal Text values — `Text =
 someVar` stays silent because we can't see inside.
 
@@ -317,8 +491,8 @@ Four new bug-catching diagnostics under a single
 **`luix.propValidation.enabled`** flag (default `true`):
 
 - **Unknown property** on a known Roblox class — `e("Frame", {
-  ScrollingDirection = … })` warns "Unknown property `ScrollingDirection`
-  on `Frame`. Did you mean `Position`?" with a *Rename to `Position`*
+ScrollingDirection = … })` warns "Unknown property `ScrollingDirection`
+  on `Frame`. Did you mean `Position`?" with a _Rename to `Position`_
   quick-fix.
 - **Duplicate key** in the same props table — `Size = …, Size = …`
   warns that the second assignment silently overwrites the first.
@@ -354,8 +528,8 @@ your keyboard can't reach. Built-in slugs can't be shadowed.
 ### Class-name completion in factory calls
 
 Typing `e("Fr|"`, `Roact.createElement("Fr|"`, `New "Fr|"`,
-`create "Fr|"`, or the Luau backtick form `` e(`Fr|`) `` now surfaces
-Roblox class names. Accepting inserts the class name *and*, if the call
+`create "Fr|"`, or the Luau backtick form ``e(`Fr|`)`` now surfaces
+Roblox class names. Accepting inserts the class name _and_, if the call
 doesn't already have a props table, adds the `, { … }` block with the
 cursor placed inside. Works for all four enabled frameworks.
 
@@ -457,7 +631,7 @@ you're editing the component itself or a file that `require`s it.
 ### Diagnostics + quick fixes
 
 - **Deprecation warnings** (default on): `Font = Enum.Font.X` → `FontFace
-  = Font.fromName(...)` quick-fix; `TextColor = …` → rename to
+= Font.fromName(...)` quick-fix; `TextColor = …` → rename to
   `TextColor3`. Toggle with `luix.deprecationDiagnostics`.
 - **Reserved-name warning** (opt-in via `luix.warnReservedPropNames`):
   flags `---@prop` declarations that shadow a property of the declared

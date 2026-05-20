@@ -75,6 +75,24 @@ further down.
   sidebar.
 - **Color picker** for every `Color3.fromRGB/new/fromHex/fromHSV`
   literal, plus a *convert between forms* code action.
+- **Gradient editor** — single **Edit UIGradient** CodeLens on
+  `e("UIGradient", …)` opens a combined side-panel for colour ramp +
+  transparency curve + rotation, with a preview square that multiplies
+  by the parent's `BackgroundColor3`. Standalone
+  `ColorSequence.new(...)` / `NumberSequence.new(...)` literals get
+  focused per-literal editors. Both kinds get a strip / curve preview
+  on hover.
+- **Rect editor** — every `ImageLabel` / `ImageButton` with a literal
+  `rbxassetid://…` `Image` gets an **Edit sprite rect** CodeLens.
+  Opens a side panel showing the asset's thumbnail with a draggable
+  rectangle for `ImageRectOffset` / `ImageRectSize`, auto-detected
+  frame aspect, dashed inner box showing what `ScaleType.Crop` will
+  actually render, scroll-to-zoom canvas, and per-asset memory of the
+  source dimensions you typed.
+- **Visual hover previews** — hover any `TweenInfo.new(...)` for an
+  easing-curve graph; hover an `e("UIPadding", …)` / `e("UICorner", …)` /
+  `e("UIStroke", …)` for a sample box visualising the configured
+  values.
 - **`UDim2` form conversion** — swap between
   `new` / `fromOffset` / `fromScale` when the value is expressible.
 - **Wrap-in code actions** — wrap any element in a `Frame`,
@@ -92,6 +110,9 @@ further down.
   (collapses to zero without a fixed-offset `Size`), deprecated
   `Font = Enum.Font.X`, typo-d `TextColor`. Optional WCAG-AA
   **color-contrast** warnings (`luix.contrastWarnings.enabled`).
+- **Unused-prop diagnostic** — props declared on a component but
+  never read in its body get the TS-style grey-out treatment.
+  Skipped when `props` is forwarded wholesale.
 - **Design tokens** — `luix.palette` (colors), `luix.spacing` (UDim),
   `luix.fonts` (Font). Type `Color3.` / `UDim.` / `Font.` to surface
   your named tokens.
@@ -102,6 +123,10 @@ further down.
   `luix.customFonts`.
 - **Color3 → palette extractor** — cursor on any Color3 literal →
   *Save to `luix.palette`* code action.
+- **Sort props by category** — code action that reorders any props
+  table into a clean category order (Identification → Layout → Style
+  → Image → Text → Behavior → Events → …). Optional opt-in
+  format-on-save via `luix.sortProps.onSave`. Order is configurable.
 - **Frame-stats CodeLens** (off by default) — `▸ N descendants, D
   layers deep` over heavy subtrees so you spot layout bloat.
 - **Project-wide diagnostic summary** (off by default) — sidebar
@@ -356,6 +381,131 @@ offers:
 
 Picks any of the four and the actual color is preserved.
 
+### Gradient editor (Preview)
+
+Three editor modes triggered by a single command, picked
+automatically based on what you click:
+
+- **UIGradient** — a single **Edit UIGradient** CodeLens above every
+  `e("UIGradient", { … })` opens a combined editor with the colour
+  ramp, transparency curve, rotation slider, and a preview square
+  that multiplies by the parent element's `BackgroundColor3`
+  (Roblox's actual `UIGradient` semantics).
+- **ColorSequence** — standalone `ColorSequence.new(...)` literals
+  get a focused editor: colour band with draggable triangle stops,
+  per-stop HTML5 colour picker, time/offset input.
+- **NumberSequence** — standalone `NumberSequence.new(...)` literals
+  get a grid canvas with draggable circle stops (X = time, Y = value),
+  value + envelope inputs.
+
+All three editors share:
+
+- Click the strip / canvas to add a stop; Shift snaps drag/click to
+  0.05 increments. Hover indicator shows where the next stop would
+  land.
+- Scroll-wheel + arrow stepping on every numeric field, with Shift =
+  5× step. Decimal point always renders `.` regardless of OS locale.
+- Output respects `luix.color3.defaultFormat`, so workspace pinned to
+  `fromHex` gets `Color3.fromHex(...)` keypoints.
+- Two-stop edge cases collapse into the short form
+  (`ColorSequence.new(c1, c2)`); three or more produce the
+  keypoint-array form.
+- Default values (`Color = white`, `Transparency = 0`, `Rotation = 0`)
+  are *omitted* from the written-back UIGradient props — no noise.
+
+Reactive sources (Fusion `Value`, Vide source, `Computed`) and
+gradients built from variables stay inert — only fully literal
+gradients get the CodeLens.
+
+Toggles: **`luix.gradient.codeLensEnabled`** (on),
+**`luix.gradient.previewOnHover`** (on).
+
+### Rect editor (Preview)
+
+Every `e("ImageLabel", { … })` or `e("ImageButton", { … })` whose
+`Image` prop is a literal `rbxassetid://…` gets an **Edit sprite
+rect** CodeLens. Opens a side-panel editor:
+
+- **Thumbnail canvas** at the largest size the API actually serves
+  (768 → 512 → 420 → 256 → 150 fallback ladder).
+- **Draggable rectangle** with 8 resize handles for picking
+  `ImageRectOffset` / `ImageRectSize` visually. Dimmed mask outside
+  the rect; amber dashed border when the rect extends past the
+  source bounds.
+- **Aspect-ratio auto-detect** — reads a sibling
+  `UIAspectRatioConstraint` or a fixed-pixel `Size = UDim2.fromOffset(…)`
+  and pre-fills the **Frame aspect** input.
+- **Crop preview overlay** — dashed yellow inner box showing exactly
+  what `ScaleType.Crop` will render given the frame aspect. Hidden
+  for `Fit / Stretch / Tile / Slice`.
+- **Native dimensions via Open Cloud (opt-in)** — set
+  `luix.openCloud.apiKey` to a Roblox API key with the
+  `legacy-asset:manage` permission and the editor auto-detects the
+  asset's real pixel dimensions by hitting
+  `apis.roblox.com/asset-delivery-api/v1/assetId/{id}`, downloading
+  the returned location, and reading the PNG/JPEG header. One call
+  per asset, ever — results cached in `globalState`.
+- **Manual override fallback** — without an API key (or if the
+  lookup fails) the editor uses the thumbnail's natural dimensions
+  and lets you type `Source W` / `Source H` manually per asset. The
+  values you type are also cached, so manual setup is one-time too.
+- **Scroll-to-zoom** — wheel on the canvas zooms 15% – 300%, with a
+  discoverable **🔍 zoom bar** (− / % / +) in the corner.
+- **Rect can exceed source dimensions** — W and H accept up to 4×
+  source; the rect can be dragged past the image edge.
+- Resetting to the whole image strips both `ImageRectOffset` and
+  `ImageRectSize` props since `Vector2.new(0, 0)` is Roblox's default.
+
+Toggle: **`luix.rectEditor.codeLensEnabled`** (on).
+
+### Visual hover previews
+
+Hover any of the following to see a tiny SVG rendered straight from
+your literal values — no network requests, no caching:
+
+- **`TweenInfo.new(...)`** — a 240×140 graph of the easing curve,
+  with reference bars at `value = 0` and `value = 1` so overshoots
+  (Back, Elastic) are visible. Summary line below: duration,
+  repeat-count, reverses, delay.
+- **`e("UIPadding", { … })`** — sample box with the inner content
+  area indented by the configured `PaddingTop` / `Right` / `Bottom` /
+  `Left`. Each non-zero side gets its pixel value labelled.
+- **`e("UICorner", { … })`** — sample rectangle rendered at the
+  configured `CornerRadius`.
+- **`e("UIStroke", { … })`** — sample box with the stroke applied
+  at the configured `Thickness` / `Color` / `Transparency`, plus
+  the resolved `ApplyStrokeMode`.
+
+Toggle: **`luix.hoverPreviews.enabled`** (on).
+
+### Sort props by category
+
+Right-click anywhere inside a props table → 💡 **Sort props by
+category**. The editor reorders props into the configured category
+order:
+
+```
+Identification → Layout → Style → Visibility → Image → Text →
+Behavior → Events → Refs → Children → Other
+```
+
+- Within each category, props are placed in their canonical Roblox
+  order; ties keep their original order (stable sort).
+- Computed-key aware: `[React.Event.Activated]`, `[OnEvent "…"]`,
+  `[Children]` are recognised. Vide-style plain identifier events
+  (`Activated = function() … end`) are mapped to **Events** too.
+- Tables containing `--` comments are skipped to avoid detaching
+  comments from their props.
+- **Idempotent** — re-sorting a sorted table is a no-op (no
+  spurious save edits).
+
+Optional format-on-save via **`luix.sortProps.onSave`** (default
+`false` — your teammates' files aren't reshaped on save unless
+they opt in too).
+
+Order is fully customisable via **`luix.sortProps.categoryOrder`**
+(string array) — reorder or remove categories to taste.
+
 ### Convert UDim2 between forms
 
 Cursor on any `UDim2.new(...)`, `UDim2.fromOffset(...)`, or
@@ -583,6 +733,19 @@ Yellow squigglies, one-click fixes:
 - **`TextScaled` gotcha** — `TextScaled = true` with a pure-scale
   `Size` (or no `Size`) collapses text to zero; flagged with a clear
   explanation.
+
+**Unused-prop diagnostic** (`luix.unusedProps.enabled`, default `true`):
+
+- Props declared in a component's parameter type
+  (`props: { Foo: …, Bar: … }`) or its `@luix-props` annotation
+  that are never read in the body are flagged with the same
+  grey-out treatment TypeScript uses for unused locals (`Hint`
+  severity, `Unnecessary` tag).
+- Skipped automatically when the body forwards `props` wholesale
+  (`e(Base, props)`, `for k, v in props do`, computed-key indexing)
+  since static analysis can't determine downstream usage.
+- The squiggle targets the field name inside the type annotation
+  when possible, otherwise the function definition line.
 
 **Optional WCAG color-contrast warnings** (`luix.contrastWarnings.enabled`):
 

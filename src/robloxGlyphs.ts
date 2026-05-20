@@ -34,6 +34,17 @@ const BY_CODEPOINT = new Map<number, RobloxGlyph>(
   ROBLOX_GLYPHS.map((g) => [g.codepoint, g])
 );
 
+// Single regex that matches any of our glyph codepoints. Used as a
+// fast reject in `findGlyphOccurrences` — most Luau files contain no
+// PUA glyphs at all, and `text.search(...)` short-circuits at the first
+// non-match without iterating every character.
+const ANY_GLYPH_RE = new RegExp(
+  "[" +
+    ROBLOX_GLYPHS.map((g) => `\\u{${g.codepoint.toString(16)}}`).join("") +
+    "]",
+  "u"
+);
+
 function formatCodepoint(cp: number): string {
   return `U+${cp.toString(16).toUpperCase().padStart(4, "0")}`;
 }
@@ -58,6 +69,11 @@ function findGlyphOccurrences(
   document: vscode.TextDocument
 ): Array<{ glyph: RobloxGlyph; offset: number; length: number }> {
   const text = document.getText();
+  // Fast reject: files with no PUA glyph chars at all skip the
+  // per-character scan entirely.
+  if (!ANY_GLYPH_RE.test(text)) {
+    return [];
+  }
   const out: Array<{ glyph: RobloxGlyph; offset: number; length: number }> = [];
   // We need to handle surrogate pairs correctly. The PUA codepoints we
   // care about are all in the BMP (≤ 0xFFFF), so a simple per-code-unit
@@ -146,16 +162,21 @@ export class RobloxGlyphHoverProvider implements vscode.HoverProvider {
     if (!getConfig<boolean>("robloxGlyphs.enabled", true)) {
       return undefined;
     }
-    const offset = document.offsetAt(position);
-    const text = document.getText();
-    const cp = text.charCodeAt(offset);
+    // We only need the single character under the cursor — reading the
+    // full document text (potentially hundreds of KB) just to inspect
+    // one code point allocates a fresh string on every hover.
+    const line = document.lineAt(position.line).text;
+    if (position.character >= line.length) {
+      return undefined;
+    }
+    const cp = line.charCodeAt(position.character);
     const glyph = BY_CODEPOINT.get(cp);
     if (!glyph) {
       return undefined;
     }
     const range = new vscode.Range(
-      document.positionAt(offset),
-      document.positionAt(offset + 1)
+      position,
+      position.translate(0, 1)
     );
     return new vscode.Hover(formatHoverMarkdown(glyph), range);
   }
