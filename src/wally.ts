@@ -11,6 +11,63 @@ function runInTerminal(command: string): void {
   terminal.sendText(command, true);
 }
 
+function shellName(): string {
+  return vscode.env.shell?.toLowerCase() ?? "";
+}
+
+/**
+ * Windows PowerShell 5.1 (powershell.exe) — the shell that ships with
+ * Windows — does not accept `&&` as a statement separator. PowerShell 7+
+ * (pwsh.exe), cmd.exe, and POSIX shells all do.
+ */
+function isWindowsPowerShell5(): boolean {
+  const s = shellName();
+  return s.endsWith("\\powershell.exe") || s.endsWith("/powershell.exe");
+}
+
+function isAnyPowerShell(): boolean {
+  const s = shellName();
+  return (
+    s.endsWith("powershell.exe") ||
+    s.endsWith("pwsh.exe") ||
+    s.endsWith("/pwsh") ||
+    s === "pwsh"
+  );
+}
+
+function isWindowsCmd(): boolean {
+  const s = shellName();
+  return s.endsWith("\\cmd.exe") || s.endsWith("/cmd.exe");
+}
+
+/**
+ * A sleep command in the current shell's syntax. cmd.exe has no sub-second
+ * sleep so we round up to whole seconds.
+ */
+function sleepCommand(ms: number): string {
+  if (isAnyPowerShell()) {
+    return `Start-Sleep -Milliseconds ${ms}`;
+  }
+  if (isWindowsCmd()) {
+    const sec = Math.max(1, Math.round(ms / 1000));
+    return `timeout /t ${sec} /nobreak >nul`;
+  }
+  return `sleep ${(ms / 1000).toFixed(2)}`;
+}
+
+/**
+ * Chain commands so the next one only runs if the previous succeeded.
+ * Works on Windows PowerShell 5.1, PowerShell 7+, cmd.exe, and POSIX shells.
+ */
+function chain(commands: string[]): string {
+  if (isWindowsPowerShell5()) {
+    return commands.reduceRight((tail, head) =>
+      tail ? `${head}; if ($?) { ${tail} }` : head
+    );
+  }
+  return commands.join(" && ");
+}
+
 /**
  * Find the project file Rojo uses. Most projects ship one called
  * `default.project.json`; we accept any `*.project.json` and prefer the
@@ -91,7 +148,17 @@ export async function regenerateWallyTypes(): Promise<void> {
     return;
   }
   runInTerminal(
-    `wally install && rojo sourcemap ${projectFile} -o sourcemap.json && wally-package-types --sourcemap sourcemap.json Packages/`
+    chain([
+      "wally install",
+      // Give Windows Defender a moment to release the freshly-written
+      // top-level link files; otherwise rojo's sourcemap may miss them
+      // and `wally-package-types` reports "Linker node … not found in
+      // sourcemap" for each one. ~1.5s matches the multi-second gaps
+      // a hand-typed sequence comfortably exceeds.
+      sleepCommand(1500),
+      `rojo sourcemap ${projectFile} -o sourcemap.json`,
+      "wally-package-types --sourcemap sourcemap.json Packages/",
+    ])
   );
 }
 

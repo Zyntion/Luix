@@ -4,6 +4,28 @@ All notable changes to **Luix** will be documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.4.1]
+
+### Regenerate Wally types — Windows PowerShell + Defender fix
+
+The **Regenerate Wally types** button (and the
+`luix.wally.regenerateTypes` command) chained its three steps with
+`&&`, which Windows PowerShell 5.1 — the default shell on Windows —
+rejects as an invalid statement separator, so the command failed
+before `wally install` even started.
+
+- **Shell-aware chaining.** On Windows PowerShell 5.1 the chain
+  is now emitted as `cmd1; if ($?) { cmd2; … }`. PowerShell 7+,
+  cmd.exe, and POSIX shells continue to use `&&`.
+- **300 → 1500 ms breather between `wally install` and
+  `rojo sourcemap`.** Windows Defender briefly locks the freshly
+  written `Packages/*.lua` link files for real-time scanning. Without
+  a pause, rojo's sourcemap silently misses them and
+  `wally-package-types` then reports `Linker node 'Packages/X.lua'
+  not found in sourcemap` for every top-level package. The delay is
+  emitted in the active shell's syntax (`Start-Sleep` /
+  `timeout /nobreak` / `sleep`).
+
 ## [1.4.0]
 
 This release adds three full-fledged visual editors (gradient,

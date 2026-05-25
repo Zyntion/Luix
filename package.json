@@ -2,7 +2,7 @@
   "name": "luix-roblox",
   "displayName": "Luix Roblox",
   "description": "All-in-one Roblox UI authoring helper for React-Luau, Fusion, Vide, and Roact — prop completions, hover docs, inlay hints, color preview, deprecation diagnostics, and more.",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "publisher": "ericplane",
   "icon": "assets/icon.png",
   "author": {
@@ -477,7 +477,12 @@
         },
         "luix.color3.defaultFormat": {
           "type": "string",
-          "enum": ["fromRGB", "fromHex", "new", "fromHSV"],
+          "enum": [
+            "fromRGB",
+            "fromHex",
+            "new",
+            "fromHSV"
+          ],
           "enumDescriptions": [
             "`Color3.fromRGB(255, 255, 255)` — integer 0-255 channels.",
             "`Color3.fromHex(\"#FFFFFF\")` — hex string.",
@@ -489,7 +494,10 @@
         },
         "luix.richText.defaultColorFormat": {
           "type": "string",
-          "enum": ["hex", "rgb"],
+          "enum": [
+            "hex",
+            "rgb"
+          ],
           "enumDescriptions": [
             "Default placeholders are written as `#FFFFFF`.",
             "Default placeholders are written as `rgb(255, 255, 255)`."
@@ -542,7 +550,10 @@
         },
         "luix.imageGutter.cacheLocation": {
           "type": "string",
-          "enum": ["global", "workspace"],
+          "enum": [
+            "global",
+            "workspace"
+          ],
           "enumDescriptions": [
             "VS Code's per-extension global storage (shared across every workspace).",
             "`.luix/assetThumbs/` inside the current workspace. A `.luix/.gitignore` is auto-written so the cache doesn't leak into commits."
@@ -582,7 +593,9 @@
         },
         "luix.sortProps.categoryOrder": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "default": [
             "Identification",
             "Layout",
@@ -626,13 +639,17 @@
         "luix.spacing": {
           "type": "object",
           "default": {},
-          "additionalProperties": { "type": "string" },
+          "additionalProperties": {
+            "type": "string"
+          },
           "markdownDescription": "Named spacing tokens that surface as completions when you type `UDim.`. Each value should be the full Roblox expression to insert.\n\n```jsonc\n{\n  \"luix.spacing\": {\n    \"xs\": \"UDim.new(0, 4)\",\n    \"sm\": \"UDim.new(0, 8)\",\n    \"md\": \"UDim.new(0, 16)\",\n    \"lg\": \"UDim.new(0, 24)\"\n  }\n}\n```\n\nMirror of `luix.palette` for `Color3`."
         },
         "luix.fonts": {
           "type": "object",
           "default": {},
-          "additionalProperties": { "type": "string" },
+          "additionalProperties": {
+            "type": "string"
+          },
           "markdownDescription": "Named font tokens that surface as completions when you type `Font.`. Each value should be the full Roblox expression to insert.\n\n```jsonc\n{\n  \"luix.fonts\": {\n    \"display\": \"Font.fromName(\\\"Gotham\\\", Enum.FontWeight.Bold)\",\n    \"body\":    \"Font.fromName(\\\"SourceSansPro\\\", Enum.FontWeight.Regular)\"\n  }\n}\n```"
         },
         "luix.font.defaultFamily": {
