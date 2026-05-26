@@ -4,6 +4,36 @@ All notable changes to **Luix** will be documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.4.2]
+
+### Asset thumbnail hover / gutter — false "moderated" after edits
+
+Changing an `rbxassetid://…` value (or hovering one Roblox has just
+started thumbnailing) often showed _"Thumbnail unavailable (asset may
+be moderated, deleted, or the API is unreachable)"_ for a full minute,
+even when the asset was fine — only a window reload would clear it.
+
+- **Stop caching transient API states.** Roblox's thumbnails API
+  returns `Pending` / `InReview` while it's still generating the
+  image (typical for freshly-referenced assets), and
+  `Error` / `TemporarilyUnavailable` during backend hiccups. The
+  previous implementation only treated `Completed` as success and
+  cached every other state — transient or not — as a failure for
+  60 seconds. Now transient states bypass the cache entirely so the
+  next hover or gutter refresh retries against the (usually
+  now-Completed) response.
+- **10 s settled-failure TTL** (was 60 s). Even when a fetch
+  genuinely fails — typo'd ID, network blip — fixing it gets a fresh
+  fetch on the next interaction instead of stranding the user behind
+  a minute-long cache.
+- **State-aware hover message.** Instead of always saying _"asset
+  may be moderated, deleted, or the API is unreachable"_, the hover
+  now reflects the actual API state: _"Roblox is still generating
+  the thumbnail — hover again in a few seconds"_ for Pending /
+  InReview, _"temporarily unavailable"_ for Error /
+  TemporarilyUnavailable, _"asset has been moderated or removed"_
+  for Blocked / Moderated.
+
 ## [1.4.1]
 
 ### Regenerate Wally types — Windows PowerShell + Defender fix

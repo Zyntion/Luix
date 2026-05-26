@@ -19,7 +19,7 @@ import {
 import { getAliasPartition } from "./frameworks";
 import { configChangeAffects, getConfig } from "./configCompat";
 import { WorkspaceIndex } from "./workspaceIndex";
-import { fetchAssetThumbnailUrl } from "./assetThumbnails";
+import { fetchAssetThumbnail } from "./assetThumbnails";
 
 // ============================================================================
 // Color preview — DocumentColorProvider
@@ -328,7 +328,7 @@ async function tryAssetHover(
     new vscode.Position(position.line, start),
     new vscode.Position(position.line, end)
   );
-  const cdnUrl = await fetchAssetThumbnailUrl(assetId);
+  const { url: cdnUrl, state } = await fetchAssetThumbnail(assetId);
   const md = new vscode.MarkdownString();
   md.isTrusted = false;
   md.supportHtml = false;
@@ -337,8 +337,30 @@ async function tryAssetHover(
       `**Roblox asset \`${assetId}\`**\n\n![](${cdnUrl})\n\n[Open on roblox.com ↗](https://www.roblox.com/library/${assetId})`
     );
   } else {
+    // Pick a message that matches what the API actually said, so a
+    // freshly-uploaded asset doesn't get mislabelled as "moderated".
+    let reason: string;
+    switch (state) {
+      case "Pending":
+      case "InReview":
+        reason =
+          "Roblox is still generating the thumbnail — hover again in a few seconds.";
+        break;
+      case "Error":
+      case "TemporarilyUnavailable":
+        reason =
+          "Roblox's thumbnail API is temporarily unavailable — hover again in a moment.";
+        break;
+      case "Blocked":
+      case "Moderated":
+        reason = "Asset has been moderated or removed.";
+        break;
+      default:
+        reason =
+          "Thumbnail unavailable (asset may not exist, or the API is unreachable).";
+    }
     md.appendMarkdown(
-      `**Roblox asset \`${assetId}\`**\n\n_Thumbnail unavailable (asset may be moderated, deleted, or the API is unreachable)._\n\n[Open on roblox.com ↗](https://www.roblox.com/library/${assetId})`
+      `**Roblox asset \`${assetId}\`**\n\n_${reason}_\n\n[Open on roblox.com ↗](https://www.roblox.com/library/${assetId})`
     );
   }
   return new vscode.Hover(md, range);

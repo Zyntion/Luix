@@ -37,26 +37,76 @@ const THUMBNAIL_SIZE = "150x150" as const;
 
 interface CachedUrl {
   url: string | null;
+  /** When this entry stops being honoured. `0` means never cached. */
   expires: number;
+  /** What we last heard from the API — used by callers to compose a hover message. */
+  state?: ThumbnailState;
 }
 const thumbnailUrlCache = new Map<string, CachedUrl>();
 const THUMBNAIL_TTL_OK = 24 * 60 * 60 * 1000;
-const THUMBNAIL_TTL_FAIL = 60 * 1000;
+/**
+ * Cache lifetime for *settled* failures (asset blocked, moderated, the
+ * API returned 404, etc.). 10 s — long enough to suppress hammering
+ * during a flurry of hovers, short enough that fixing a typo or
+ * switching to a different ID gets a fresh fetch on the next look.
+ *
+ * Previously 60 s, which left users staring at a "moderated" message
+ * for a full minute after every edit until the in-memory cache aged out.
+ */
+const THUMBNAIL_TTL_FAIL = 10 * 1000;
+
+/**
+ * Roblox's thumbnails API splits its responses into a handful of named
+ * states. We use this to decide whether a result is worth caching:
+ *
+ *   • `Completed` — done, has `imageUrl`. Cache for a day.
+ *   • `Pending` / `InReview` — Roblox hasn't generated the thumbnail
+ *     yet (common for freshly-uploaded assets). Almost always
+ *     transitions to `Completed` within seconds. **Do not cache** —
+ *     the next call will succeed.
+ *   • `Error` / `TemporarilyUnavailable` — transient backend issue.
+ *     Same rationale: don't cache, let the next call retry.
+ *   • `Blocked` / `Moderated` — permanent. Cache as failure.
+ *   • Unknown / missing / network error — cache as failure (short TTL).
+ */
+export type ThumbnailState =
+  | "Completed"
+  | "Pending"
+  | "InReview"
+  | "Error"
+  | "TemporarilyUnavailable"
+  | "Blocked"
+  | "Moderated"
+  | "Unknown";
+
+const TRANSIENT_STATES: ReadonlySet<ThumbnailState> = new Set([
+  "Pending",
+  "InReview",
+  "Error",
+  "TemporarilyUnavailable",
+]);
+
+export interface ThumbnailLookup {
+  url: string | null;
+  state: ThumbnailState;
+}
 
 /**
  * Resolve a Roblox asset ID to the actual CDN image URL via the public
- * thumbnails API. Returns null when the asset is moderated, deleted, or
- * the API is unreachable. Memoised for the session.
+ * thumbnails API. Returns the URL plus the API's reported state so the
+ * caller can pick a sensible message (transient vs permanent).
+ * Memoised for the session — successes for 24 h, settled failures for
+ * 10 s, transient states (Pending, InReview, Error, …) not cached at all.
  */
-export async function fetchAssetThumbnailUrl(
+export async function fetchAssetThumbnail(
   assetId: string,
   size: string = THUMBNAIL_SIZE
-): Promise<string | null> {
+): Promise<ThumbnailLookup> {
   const cacheKey = `${assetId}@${size}`;
   const now = Date.now();
   const cached = thumbnailUrlCache.get(cacheKey);
   if (cached && cached.expires > now) {
-    return cached.url;
+    return { url: cached.url, state: cached.state ?? "Unknown" };
   }
   const url =
     `https://thumbnails.roblox.com/v1/assets` +
@@ -64,35 +114,57 @@ export async function fetchAssetThumbnailUrl(
   try {
     const res = await fetch(url, { signal: AbortSignal.timeout(10_000) });
     if (!res.ok) {
-      thumbnailUrlCache.set(cacheKey, {
-        url: null,
-        expires: now + THUMBNAIL_TTL_FAIL,
-      });
-      return null;
+      return cacheFailure(cacheKey, now, "Unknown");
     }
     const payload = (await res.json()) as {
       data?: Array<{ state?: string; imageUrl?: string | null }>;
     };
     const entry = payload?.data?.[0];
-    if (entry?.state === "Completed" && entry.imageUrl) {
+    const state = (entry?.state ?? "Unknown") as ThumbnailState;
+    if (state === "Completed" && entry?.imageUrl) {
       thumbnailUrlCache.set(cacheKey, {
         url: entry.imageUrl,
         expires: now + THUMBNAIL_TTL_OK,
+        state,
       });
-      return entry.imageUrl;
+      return { url: entry.imageUrl, state };
     }
-    thumbnailUrlCache.set(cacheKey, {
-      url: null,
-      expires: now + THUMBNAIL_TTL_FAIL,
-    });
-    return null;
+    if (TRANSIENT_STATES.has(state)) {
+      // Don't cache — the next call will likely succeed once Roblox has
+      // finished generating the thumbnail / recovered from a backend
+      // blip. This is the difference between "hover works after a few
+      // seconds" and "hover is stuck for 60 s after every edit".
+      return { url: null, state };
+    }
+    return cacheFailure(cacheKey, now, state);
   } catch {
-    thumbnailUrlCache.set(cacheKey, {
-      url: null,
-      expires: now + THUMBNAIL_TTL_FAIL,
-    });
-    return null;
+    return cacheFailure(cacheKey, now, "Unknown");
   }
+}
+
+function cacheFailure(
+  cacheKey: string,
+  now: number,
+  state: ThumbnailState
+): ThumbnailLookup {
+  thumbnailUrlCache.set(cacheKey, {
+    url: null,
+    expires: now + THUMBNAIL_TTL_FAIL,
+    state,
+  });
+  return { url: null, state };
+}
+
+/**
+ * Back-compat shim for callers that only want the URL — the gutter
+ * decorator doesn't need to know the state.
+ */
+export async function fetchAssetThumbnailUrl(
+  assetId: string,
+  size: string = THUMBNAIL_SIZE
+): Promise<string | null> {
+  const { url } = await fetchAssetThumbnail(assetId, size);
+  return url;
 }
 
 /**
