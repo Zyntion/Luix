@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import {
   ANNOTATION_TYPE_HINTS,
+  classHierarchy,
   getPropType,
   defaultPropsMap,
   flattenClassEvents,
@@ -15,6 +16,7 @@ import {
   scanDocument,
 } from "./parser";
 import {
+  FRAMEWORKS,
   findFrameworkForAlias,
   getAliasPartition,
 } from "./frameworks";
@@ -48,7 +50,8 @@ export class ReactLuauPropsCompletionProvider
       const detected = findEnclosingPropsCall(
         text,
         cursorOffset,
-        getAliasPartition()
+        getAliasPartition(),
+        this.workspaceIndex.knownDirectCallTargets()
       );
       if (!detected) {
         return undefined;
@@ -87,7 +90,12 @@ export class ReactLuauPropsCompletionProvider
       });
     }
 
-    const detected = findEnclosingPropsCall(text, cursorOffset, getAliasPartition());
+    const detected = findEnclosingPropsCall(
+      text,
+      cursorOffset,
+      getAliasPartition(),
+      this.workspaceIndex.knownDirectCallTargets()
+    );
     if (!detected) {
       return undefined;
     }
@@ -113,22 +121,35 @@ export class ReactLuauPropsCompletionProvider
     // (e.g. `Activated = function() … end`). Merge the events of the
     // resolved class into the suggestion list when the matched framework
     // opts in.
-    if (detected.alias) {
-      const framework = findFrameworkForAlias(detected.alias);
-      if (framework?.eventsAsProps) {
-        const baseClass = await resolveEffectiveClass(
-          detected.className,
-          document,
-          this.workspaceIndex
-        );
-        if (baseClass) {
-          const events = flattenClassEvents(baseClass);
-          if (events.length > 0) {
-            const merged: string[] = [];
-            pushUnique(merged, props);
-            pushUnique(merged, events);
-            props = merged;
-          }
+    //
+    // Vide also lets users construct built-in instances by calling the
+    // class name directly — `Frame({ … })`, `TextButton({ … })`. The
+    // detector flags those with `isDirectComponentCall=true` and a
+    // className that matches Roblox's hierarchy; we attribute them to
+    // Vide here so events get merged identically to the canonical
+    // `create "Frame" { … }` form.
+    let framework =
+      detected.alias && findFrameworkForAlias(detected.alias);
+    if (
+      !framework &&
+      detected.isDirectComponentCall &&
+      classHierarchy[detected.className]
+    ) {
+      framework = FRAMEWORKS.vide;
+    }
+    if (framework && framework.eventsAsProps) {
+      const baseClass = await resolveEffectiveClass(
+        detected.className,
+        document,
+        this.workspaceIndex
+      );
+      if (baseClass) {
+        const events = flattenClassEvents(baseClass);
+        if (events.length > 0) {
+          const merged: string[] = [];
+          pushUnique(merged, props);
+          pushUnique(merged, events);
+          props = merged;
         }
       }
     }
@@ -681,17 +702,24 @@ function color3Template(): string {
 
 /**
  * Types where the snippet should drop a namespace prefix (`Color3.`,
- * `UDim.`, `Font.`) and immediately open the suggest dropdown so the
- * user can pick from constructors AND palette/spacing/fonts tokens.
+ * `UDim.`, `UDim2.`, `Font.`) and immediately open the suggest dropdown
+ * so the user can pick from constructors AND palette/spacing/fonts
+ * tokens.
  *
- * Picking a constructor (e.g. `fromRGB`) inserts its own snippet with
- * per-channel tab stops, so the original Tab-through-each-value
- * workflow is preserved. Picking a token (e.g. `palette.primary`)
- * replaces the prefix with the full literal.
+ * Picking a constructor (e.g. `fromRGB` for Color3, `fromScale` for
+ * UDim2) inserts its own snippet with per-channel tab stops, so the
+ * Tab-through-each-value workflow is preserved if the user wants it.
+ * Picking a token (e.g. `palette.primary`) replaces the prefix with
+ * the full literal.
+ *
+ * UDim2 lives here because `.fromScale(x, y)` and `.fromOffset(x, y)`
+ * are at least as common as `.new(0, 0, 0, 0)` in modern Vide/React
+ * code — auto-inserting `.new` was forcing users to delete-and-retype.
  */
 const PREFIX_TRIGGER_TYPES: Record<string, string> = {
   Color3: "Color3.",
   UDim: "UDim.",
+  UDim2: "UDim2.",
   Font: "Font.",
 };
 

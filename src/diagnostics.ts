@@ -124,7 +124,9 @@ export class DiagnosticsManager implements vscode.Disposable {
       diagnostics.push(...computeReservedNameDiagnostics(text));
     }
     if (warnDeprecation) {
-      diagnostics.push(...computeDeprecationDiagnostics(text, document));
+      diagnostics.push(
+        ...computeDeprecationDiagnostics(text, document, this.workspaceIndex)
+      );
     }
     if (autoImport.enabled) {
       diagnostics.push(
@@ -269,17 +271,19 @@ function computeReservedNameDiagnostics(text: string): vscode.Diagnostic[] {
 
 function computeDeprecationDiagnostics(
   text: string,
-  document: vscode.TextDocument
+  document: vscode.TextDocument,
+  workspaceIndex: WorkspaceIndex
 ): vscode.Diagnostic[] {
   const out: vscode.Diagnostic[] = [];
   const masked = applyMask(text, buildCodeMask(text));
   const aliases = getAliasPartition();
+  const directComponents = workspaceIndex.knownDirectCallTargets();
 
   // `Font = Enum.Font.X` inside a createElement props table.
   const fontRe = /\bFont\s*=\s*Enum\.Font\.([A-Za-z_]\w*)/g;
   let m: RegExpExecArray | null;
   while ((m = fontRe.exec(masked)) !== null) {
-    if (!isOffsetInsideAnyPropsTable(text, m.index, aliases)) {
+    if (!isOffsetInsideAnyPropsTable(text, m.index, aliases, directComponents)) {
       continue;
     }
     const range = new vscode.Range(
@@ -301,7 +305,7 @@ function computeDeprecationDiagnostics(
   const typoRe = /(?<![A-Za-z0-9_])TextColor(?!\d)\s*=/g;
   let t: RegExpExecArray | null;
   while ((t = typoRe.exec(masked)) !== null) {
-    if (!isOffsetInsideAnyPropsTable(text, t.index, aliases)) {
+    if (!isOffsetInsideAnyPropsTable(text, t.index, aliases, directComponents)) {
       continue;
     }
     const propStart = t.index;
@@ -326,9 +330,12 @@ function computeDeprecationDiagnostics(
 function isOffsetInsideAnyPropsTable(
   text: string,
   offset: number,
-  aliases: AliasPartition
+  aliases: AliasPartition,
+  directComponents?: ReadonlySet<string>
 ): boolean {
-  return findEnclosingPropsCall(text, offset, aliases) !== undefined;
+  return (
+    findEnclosingPropsCall(text, offset, aliases, directComponents) !== undefined
+  );
 }
 
 // ============================================================================

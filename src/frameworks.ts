@@ -3,6 +3,7 @@
 // props, etc.) should be reflected in completions and inlay hints.
 
 import { getConfig } from "./configCompat";
+import { DIRECT_INSTANTIABLE_CLASS_NAMES } from "./data";
 
 export type FrameworkId = "react" | "roact" | "fusion" | "vide";
 
@@ -124,4 +125,36 @@ export function findFrameworkForAlias(
     }
   }
   return undefined;
+}
+
+/**
+ * Built-in Roblox UI class names that should be recognised as targets
+ * of Vide's bare-call shape — `Frame({ Size = … })`,
+ * `TextButton({ Activated = … })`, etc. Gated by:
+ *
+ *   1. The Vide framework being in `luix.frameworks` (no point firing
+ *      this detection for a React-only project — the React `Frame(…)`
+ *      pattern is `e("Frame", …)`).
+ *   2. The opt-out setting `luix.vide.directInstanceCalls` being true
+ *      (default).
+ *
+ * Returns undefined when the feature shouldn't apply, so callers can
+ * skip the union with workspace components entirely. When applicable,
+ * the returned set is the curated UI-only allowlist from `data.ts`
+ * (no `Camera`, `Sound`, `Tween`, `Workspace`, …).
+ */
+export function getDirectInstanceClassNames(): ReadonlySet<string> | undefined {
+  const enabled = getConfig<FrameworkId[]>("frameworks", ALL_FRAMEWORK_IDS);
+  const ids = Array.isArray(enabled) && enabled.length > 0
+    ? enabled.filter((id): id is FrameworkId =>
+        ALL_FRAMEWORK_IDS.includes(id as FrameworkId)
+      )
+    : ALL_FRAMEWORK_IDS;
+  if (!ids.includes("vide")) {
+    return undefined;
+  }
+  if (!getConfig<boolean>("vide.directInstanceCalls", true)) {
+    return undefined;
+  }
+  return DIRECT_INSTANTIABLE_CLASS_NAMES;
 }

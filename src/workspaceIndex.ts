@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import { configChangeAffects, getConfig } from "./configCompat";
-import { getAliasPartition } from "./frameworks";
+import { getAliasPartition, getDirectInstanceClassNames } from "./frameworks";
 import {
   CreateElementCall,
   findAllCreateElementCalls,
@@ -402,6 +402,51 @@ export class WorkspaceIndex implements vscode.Disposable {
       }
     }
     return undefined;
+  }
+
+  /**
+   * Synchronous snapshot of every component name the index currently
+   * knows about, across every indexed file. Used by the parser's
+   * direct-component-call detection (`MyComp({...})` / `MyComp {...}`)
+   * to decide whether a bare identifier should be treated as a Vide /
+   * Fusion custom-component call rather than a plain Lua function.
+   *
+   * Cheap — walks the cache once per call. Callers are completion /
+   * hover / diagnostics paths that already accept a couple of ms of
+   * setup work per keystroke. If this becomes a hotspot, memoise on
+   * `onDidChangeIndex`.
+   */
+  knownComponentNames(): Set<string> {
+    const out = new Set<string>();
+    for (const entry of this.cache.values()) {
+      for (const name of entry.components.keys()) {
+        out.add(name);
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Workspace components plus the built-in Vide instance class names
+   * (when `luix.vide.directInstanceCalls` is on and Vide is enabled).
+   * This is the set Luix passes to the parser's direct-call detection.
+   *
+   * Workspace components are added *after* the built-ins so a
+   * user-defined `Frame` shadows Roblox's `Frame` — but since the
+   * parser just checks membership, the order doesn't actually matter
+   * for detection; the precedence happens downstream in
+   * `getPropsForClass`, which already looks up workspace components
+   * before built-ins.
+   */
+  knownDirectCallTargets(): Set<string> {
+    const out = this.knownComponentNames();
+    const instances = getDirectInstanceClassNames();
+    if (instances) {
+      for (const name of instances) {
+        out.add(name);
+      }
+    }
+    return out;
   }
 
   /**

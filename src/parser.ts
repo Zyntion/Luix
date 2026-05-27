@@ -9,10 +9,20 @@ export interface EnclosingCall {
   className: string;
   isStringLiteralName: boolean;
   /** Which factory alias matched (`e`, `New`, `create`, …). Lets callers
-   *  look up the framework. */
+   *  look up the framework. For direct component calls
+   *  (`MyComp({...})` / `MyComp {...}`) this is the component name
+   *  itself — no factory alias was used. */
   alias?: string;
   /** Whether the matched call was the parens or curried form. */
   callShape?: "parens" | "curried";
+  /**
+   * True when the match came from the Vide/Fusion-style direct
+   * component call shape (`MyComp({...})` / `MyComp {...}`) rather than
+   * a known factory alias. Callers that want to skip
+   * built-in-instance-only logic (e.g. merging Roblox event names into
+   * suggestions) can branch on this.
+   */
+  isDirectComponentCall?: boolean;
 }
 
 export interface ComponentAnnotations {
@@ -301,7 +311,16 @@ function escapeRegex(s: string): string {
 export function findEnclosingPropsCall(
   text: string,
   cursorIndex: number,
-  aliases: AliasPartition | string[]
+  aliases: AliasPartition | string[],
+  /**
+   * Identifiers Luix's workspace index already recognises as components.
+   * When provided, the detector also accepts the Vide/Fusion-style direct
+   * component-call shapes — `<Identifier>({ ... })` and `<Identifier> { ... }`
+   * — *only* when the identifier appears in this set. Without the gate the
+   * curried form would match every `f { ... }` table-call in the language,
+   * so this set is the entire safety net.
+   */
+  directComponents?: ReadonlySet<string>
 ): EnclosingCall | undefined {
   const partition = asPartition(aliases);
   const mask = buildCodeMask(text);
@@ -393,6 +412,47 @@ export function findEnclosingPropsCall(
           callShape: "curried",
         };
       }
+    }
+  }
+
+  // 3) Direct component-call shapes — Vide / Fusion idiom for custom
+  //    components. Only run when the caller handed us a set of names
+  //    Luix's workspace index already knows about; without that gate the
+  //    curried form would match every `someFunc { … }` table-call in the
+  //    language and pollute completions in pure-logic code.
+  //
+  //    Excludes `.` and `:` from the leading char-class so method calls
+  //    (`obj.Method({…})`, `obj:Method({…})`) and qualified accesses
+  //    (`Module.Sub({…})`) don't trip the regex — the user's component
+  //    table is almost always a bare local from a `require`.
+  if (directComponents && directComponents.size > 0) {
+    // 3a) Direct parens:  IDENT(  $
+    const directParens =
+      /(?:^|[^A-Za-z0-9_.:])([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*$/;
+    const parensMatch = directParens.exec(before);
+    if (parensMatch && directComponents.has(parensMatch[1])) {
+      const name = parensMatch[1];
+      return {
+        className: name,
+        isStringLiteralName: false,
+        alias: name,
+        callShape: "parens",
+        isDirectComponentCall: true,
+      };
+    }
+    // 3b) Direct curried:  IDENT  $   (followed by `{`)
+    const directCurried =
+      /(?:^|[^A-Za-z0-9_.:])([A-Za-z_][A-Za-z0-9_]*)\s*$/;
+    const curriedMatch = directCurried.exec(before);
+    if (curriedMatch && directComponents.has(curriedMatch[1])) {
+      const name = curriedMatch[1];
+      return {
+        className: name,
+        isStringLiteralName: false,
+        alias: name,
+        callShape: "curried",
+        isDirectComponentCall: true,
+      };
     }
   }
 

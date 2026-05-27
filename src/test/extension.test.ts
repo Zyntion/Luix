@@ -1370,3 +1370,258 @@ end`;
     assert.ok(!info?.hardcodedProps?.has("Size"));
   });
 });
+
+// ============================================================================
+// 1.4.3 — direct component-call detection (Vide / Fusion idiom)
+// ============================================================================
+
+suite("Direct component-call detection", () => {
+  const KNOWN = new Set(["StylizedButton", "Card", "MyComp"]);
+
+  test("picks up `StylizedButton({ | })` when the name is a known component", () => {
+    const text = `StylizedButton({ | })`;
+    const cursor = text.indexOf("|");
+    const stripped = text.replace("|", "");
+    const result = findEnclosingPropsCall(
+      stripped,
+      cursor,
+      VIDE_PARTITION,
+      KNOWN
+    );
+    assert.strictEqual(result?.className, "StylizedButton");
+    assert.strictEqual(result?.callShape, "parens");
+    assert.strictEqual(result?.isDirectComponentCall, true);
+  });
+
+  test("picks up `StylizedButton { | }` (curried direct call)", () => {
+    const text = `StylizedButton { | }`;
+    const cursor = text.indexOf("|");
+    const stripped = text.replace("|", "");
+    const result = findEnclosingPropsCall(
+      stripped,
+      cursor,
+      VIDE_PARTITION,
+      KNOWN
+    );
+    assert.strictEqual(result?.className, "StylizedButton");
+    assert.strictEqual(result?.callShape, "curried");
+    assert.strictEqual(result?.isDirectComponentCall, true);
+  });
+
+  test("does NOT trigger when the identifier isn't a known component", () => {
+    const text = `randomFn({ | })`;
+    const cursor = text.indexOf("|");
+    const stripped = text.replace("|", "");
+    const result = findEnclosingPropsCall(
+      stripped,
+      cursor,
+      VIDE_PARTITION,
+      KNOWN
+    );
+    assert.strictEqual(result, undefined);
+  });
+
+  test("does NOT trigger for a plain `tbl { ... }` Lua function call with unknown name", () => {
+    // This is the safety case — without the known-components gate the
+    // curried regex would match every `f { ... }` table-call in Lua.
+    const text = `task.spawn(function() local t = work { | } end)`;
+    const cursor = text.indexOf("|");
+    const stripped = text.replace("|", "");
+    const result = findEnclosingPropsCall(
+      stripped,
+      cursor,
+      VIDE_PARTITION,
+      KNOWN
+    );
+    assert.strictEqual(result, undefined);
+  });
+
+  test("does NOT trigger when no known-components set is supplied", () => {
+    // Back-compat: the old 3-arg signature must keep returning undefined
+    // for bare component calls.
+    const text = `StylizedButton({ | })`;
+    const cursor = text.indexOf("|");
+    const stripped = text.replace("|", "");
+    const result = findEnclosingPropsCall(stripped, cursor, VIDE_PARTITION);
+    assert.strictEqual(result, undefined);
+  });
+
+  test("does NOT trigger on method calls like `obj:Card({ | })`", () => {
+    const text = `obj:Card({ | })`;
+    const cursor = text.indexOf("|");
+    const stripped = text.replace("|", "");
+    const result = findEnclosingPropsCall(
+      stripped,
+      cursor,
+      VIDE_PARTITION,
+      KNOWN
+    );
+    assert.strictEqual(result, undefined);
+  });
+
+  test("does NOT trigger on qualified accesses like `Mod.Card({ | })`", () => {
+    // The `.` exclusion in the regex keeps `Mod.Card(` out — Luix's
+    // workspace index keys components by bare name anyway, so the
+    // user's component table is always a `require`d local.
+    const text = `Mod.Card({ | })`;
+    const cursor = text.indexOf("|");
+    const stripped = text.replace("|", "");
+    const result = findEnclosingPropsCall(
+      stripped,
+      cursor,
+      VIDE_PARTITION,
+      KNOWN
+    );
+    assert.strictEqual(result, undefined);
+  });
+
+  test("framework-mediated calls still take precedence over direct detection", () => {
+    // `e(Card, { | })` should match the parens-form alias path first
+    // (callShape=parens, alias='e', isDirectComponentCall=undefined),
+    // not the direct-call fallback.
+    const text = `e(Card, { | })`;
+    const cursor = text.indexOf("|");
+    const stripped = text.replace("|", "");
+    const result = findEnclosingPropsCall(
+      stripped,
+      cursor,
+      ALL_PARTITION,
+      KNOWN
+    );
+    assert.strictEqual(result?.className, "Card");
+    assert.strictEqual(result?.alias, "e");
+    assert.strictEqual(result?.callShape, "parens");
+    assert.notStrictEqual(result?.isDirectComponentCall, true);
+  });
+
+  test("direct call inside an outer e(...) still resolves to the inner component", () => {
+    // Mixed framework: React-style outer with a direct-Vide-call inner
+    // child. Cursor inside the inner `{ ... }` should resolve to the
+    // inner component, not the outer "Frame".
+    const text = `e("Frame", {
+  StylizedButton({ | }),
+})`;
+    const cursor = text.indexOf("|");
+    const stripped = text.replace("|", "");
+    const result = findEnclosingPropsCall(
+      stripped,
+      cursor,
+      ALL_PARTITION,
+      KNOWN
+    );
+    assert.strictEqual(result?.className, "StylizedButton");
+    assert.strictEqual(result?.isDirectComponentCall, true);
+  });
+});
+
+// ============================================================================
+// Direct instance-call detection — Vide's `Frame({...})` shape for built-in
+// Roblox classes. Same gate as direct component calls; the parser doesn't
+// distinguish, downstream code differentiates by checking `classHierarchy`.
+// ============================================================================
+
+suite("Direct instance-call detection (Vide)", () => {
+  // Built-in class names that flow through as direct-call targets when
+  // `luix.vide.directInstanceCalls` is on. In production these come from
+  // `DIRECT_INSTANTIABLE_CLASS_NAMES`; here we hand-roll the same shape.
+  const INSTANCES = new Set([
+    "Frame",
+    "TextLabel",
+    "TextButton",
+    "ImageButton",
+    "ScrollingFrame",
+    "UICorner",
+    "UIPadding",
+  ]);
+
+  test("picks up `Frame({ | })`", () => {
+    const text = `Frame({ | })`;
+    const cursor = text.indexOf("|");
+    const stripped = text.replace("|", "");
+    const result = findEnclosingPropsCall(
+      stripped,
+      cursor,
+      VIDE_PARTITION,
+      INSTANCES
+    );
+    assert.strictEqual(result?.className, "Frame");
+    assert.strictEqual(result?.callShape, "parens");
+    assert.strictEqual(result?.isDirectComponentCall, true);
+  });
+
+  test("picks up `TextButton { | }` (curried instance call)", () => {
+    const text = `TextButton { | }`;
+    const cursor = text.indexOf("|");
+    const stripped = text.replace("|", "");
+    const result = findEnclosingPropsCall(
+      stripped,
+      cursor,
+      VIDE_PARTITION,
+      INSTANCES
+    );
+    assert.strictEqual(result?.className, "TextButton");
+    assert.strictEqual(result?.callShape, "curried");
+    assert.strictEqual(result?.isDirectComponentCall, true);
+  });
+
+  test("does NOT fire on `Camera({ | })` (non-UI class not in the set)", () => {
+    // The allowlist is UI-only; non-UI Roblox class names like Camera,
+    // Sound, Tween, Workspace are deliberately absent so a local
+    // variable with one of those names can't accidentally trigger.
+    const text = `Camera({ | })`;
+    const cursor = text.indexOf("|");
+    const stripped = text.replace("|", "");
+    const result = findEnclosingPropsCall(
+      stripped,
+      cursor,
+      VIDE_PARTITION,
+      INSTANCES
+    );
+    assert.strictEqual(result, undefined);
+  });
+
+  test("workspace component shadows a built-in class name in the set", () => {
+    // If both `Frame` (workspace component) and `Frame` (built-in class)
+    // map into the set, detection still succeeds — downstream picks the
+    // workspace component via `findComponent` → `getPropsForClass`. The
+    // parser itself is order-agnostic; this test guards the membership
+    // check, not the precedence (which is downstream).
+    const both = new Set(["Frame", "TextLabel"]);
+    const text = `Frame { | }`;
+    const cursor = text.indexOf("|");
+    const stripped = text.replace("|", "");
+    const result = findEnclosingPropsCall(
+      stripped,
+      cursor,
+      VIDE_PARTITION,
+      both
+    );
+    assert.strictEqual(result?.className, "Frame");
+    assert.strictEqual(result?.isDirectComponentCall, true);
+  });
+
+  test("DIRECT_INSTANTIABLE_CLASS_NAMES excludes abstract bases", () => {
+    // Smoke-test the curated allowlist: concrete UI classes present,
+    // abstract bases absent.
+    const { DIRECT_INSTANTIABLE_CLASS_NAMES } = require("../data");
+    const set: ReadonlySet<string> = DIRECT_INSTANTIABLE_CLASS_NAMES;
+    // Concrete — should be there.
+    assert.ok(set.has("Frame"));
+    assert.ok(set.has("TextLabel"));
+    assert.ok(set.has("ScrollingFrame"));
+    assert.ok(set.has("UIPadding"));
+    assert.ok(set.has("UICorner"));
+    // Abstract — should NOT be there.
+    assert.ok(!set.has("Instance"));
+    assert.ok(!set.has("GuiBase2d"));
+    assert.ok(!set.has("GuiObject"));
+    assert.ok(!set.has("GuiButton"));
+    assert.ok(!set.has("UILayout"));
+    // Non-UI — should NOT be there (defensive; Luix's classHierarchy
+    // doesn't model them anyway).
+    assert.ok(!set.has("Camera"));
+    assert.ok(!set.has("Sound"));
+    assert.ok(!set.has("Tween"));
+    assert.ok(!set.has("Workspace"));
+  });
+});

@@ -2,7 +2,7 @@
   "name": "luix-roblox",
   "displayName": "Luix Roblox",
   "description": "All-in-one Roblox UI authoring helper for React-Luau, Fusion, Vide, and Roact — prop completions, hover docs, inlay hints, color preview, deprecation diagnostics, and more.",
-  "version": "1.4.2",
+  "version": "1.4.3",
   "publisher": "ericplane",
   "icon": "assets/icon.png",
   "author": {
@@ -297,6 +297,11 @@
           },
           "default": [],
           "markdownDescription": "Override the Vide factory aliases (`create`, `vide.create`). Leave empty to use the defaults."
+        },
+        "luix.vide.directInstanceCalls": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "When **Vide** is in `#luix.frameworks#`, recognize Vide's bare-call shape for built-in Roblox UI classes — `Frame({ Size = … })`, `TextButton({ Activated = … })`, `ScrollingFrame { … }`, etc. — and surface the matching class's prop + event completions inside the table.\n\nThe class allowlist is the same set Luix already has prop data for (Frame, ScrollingFrame, TextLabel, TextButton, ImageLabel, ImageButton, ScreenGui, BillboardGui, every `UI*` constraint / layout / decorator …), minus the abstract bases (`GuiObject`, `GuiButton`, `Instance`). Non-UI Roblox class names (`Camera`, `Sound`, `Tween`, `Workspace`, …) are deliberately *not* in the set — Luix doesn't have prop data for them and they're common local-variable names.\n\nWorkspace components always shadow built-in class names: if you've defined your own `local function Frame(props)` somewhere, *that* component's declared props win over Roblox's `Frame`.\n\nDisable if you have local variables named after UI classes that you call with a table for unrelated reasons."
         },
         "luix.props": {
           "type": "object",

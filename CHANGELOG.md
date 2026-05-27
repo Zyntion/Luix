@@ -4,6 +4,93 @@ All notable changes to **Luix** will be documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.4.3]
+
+### `Size` / `Position` completion now hands you the constructor picker
+
+Accepting a UDim2-typed prop (`Size`, `Position`, `CanvasSize`,
+`CellSize`, `TileSize`, `PageSize`, `CellPadding`) used to insert the
+full `Size = UDim2.new(0, 0, 0, 0),` template with tab stops in each
+channel — fine if you wanted `.new`, annoying if you wanted
+`.fromScale` or `.fromOffset` (which are at least as common in modern
+Vide / React-Luau code), because you had to delete and retype.
+
+Now UDim2 follows the same pattern as `Color3`, `UDim`, and `Font`:
+Luix inserts `Size = UDim2.` and immediately opens the suggest
+dropdown, so you can pick `.new` / `.fromScale` / `.fromOffset` /
+`.fromAxis` (or any spacing token you've defined under
+`luix.spacing`). Picking a constructor still inserts its full
+per-channel snippet, so the original Tab-through-each-value workflow
+is preserved for the cases where you do want `.new`.
+
+### Direct instance-call detection — `Frame({...})` etc. for Vide
+
+Vide lets you construct built-in Roblox UI instances by calling the
+class name directly — `Frame({ Size = … })`,
+`TextButton({ Activated = … })`, `ScrollingFrame { CanvasSize = … }` —
+instead of going through `create "Frame" { … }`. Luix now recognises
+these as instance-creation sites and surfaces the matching class's
+prop + event completions inside the table.
+
+- **`luix.vide.directInstanceCalls`** (default `true`) — opt-out
+  setting in case you have local variables named after Roblox UI
+  classes that you call with a table for unrelated reasons. Only
+  applies when Vide is in `luix.frameworks` — React-only / Roact-only
+  projects are unaffected.
+- **Curated allowlist.** Re-uses Luix's existing class hierarchy
+  (Frame, ScrollingFrame, TextLabel, TextButton, ImageLabel,
+  ImageButton, ScreenGui, BillboardGui, every `UI*` constraint /
+  layout / decorator), minus the abstract bases (`Instance`,
+  `GuiObject`, `GuiButton`, …). Non-UI Roblox class names (`Camera`,
+  `Sound`, `Tween`, `Workspace`, …) are deliberately absent — Luix
+  doesn't model them, and they're common local-variable names.
+- **Events get merged just like `create "Frame" {…}`.** Direct
+  instance calls are attributed to Vide downstream, so `Activated`,
+  `MouseEnter`, etc. surface as suggestions on instance classes that
+  have them — matching the canonical curried form.
+- **Workspace components shadow built-in class names.** If you've
+  defined your own `local function Frame(props)` somewhere, _that_
+  component's declared props win over Roblox's `Frame`.
+
+### Direct component-call detection for Vide / Fusion
+
+Custom Vide and Fusion components are typically invoked directly with
+a props table — `StylizedButton({ Theme = "Green", Text = "..." })` or
+the curried `StylizedButton { Theme = "Green", ... }` — rather than
+wrapped in a factory call. Luix's parser previously only recognised
+the alias-prefixed forms (`e(Comp, { … })`, `create "Frame" { … }`,
+`New "Frame" { … }`), so prop completions, hover docs, anchor presets,
+and prop-validation diagnostics all silently bailed inside the props
+table of a direct component call. luau-lsp's word-based suggestions
+then filled the gap with unrelated identifiers (`TextLabel`,
+`TextService`, etc.).
+
+- **`findEnclosingPropsCall` now accepts a `directComponents` set.**
+  When the cursor is in a `{ … }` table preceded by `<Identifier>(`
+  or `<Identifier> ` and the identifier appears in that set, the call
+  is treated as a direct component call. The result carries a new
+  `isDirectComponentCall: true` flag so callers can branch (e.g.
+  skip merging built-in-instance events).
+- **`WorkspaceIndex.knownComponentNames()`** exposes a synchronous
+  snapshot of every component the index has seen, which is what the
+  completion / hover / anchor-preset / diagnostics paths now pass in.
+  The set is the entire safety gate — without it the curried regex
+  would match every `f { … }` table-call in the language.
+- **Method calls and qualified accesses stay quiet.**
+  `obj:Card({ … })` and `Mod.Card({ … })` are deliberately excluded
+  via the leading char-class so non-UI code can't accidentally
+  trigger prop completions.
+- **Framework-mediated calls take precedence.** The existing
+  parens / curried alias paths run first; the direct-call detection is
+  a strict fallback. Mixing styles in one file (`e("Frame", { …
+StylizedButton({ … }) … })`) keeps each call's framework attribution
+  intact.
+
+9 unit tests added (`Direct component-call detection` suite) covering
+the happy path, the safety cases (unknown identifier, no-set
+back-compat, method calls, qualified accesses), and the
+mixed-framework nesting case.
+
 ## [1.4.2]
 
 ### Asset thumbnail hover / gutter — false "moderated" after edits
@@ -52,7 +139,7 @@ before `wally install` even started.
   written `Packages/*.lua` link files for real-time scanning. Without
   a pause, rojo's sourcemap silently misses them and
   `wally-package-types` then reports `Linker node 'Packages/X.lua'
-  not found in sourcemap` for every top-level package. The delay is
+not found in sourcemap` for every top-level package. The delay is
   emitted in the active shell's syntax (`Start-Sleep` /
   `timeout /nobreak` / `sleep`).
 

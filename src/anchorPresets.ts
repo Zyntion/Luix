@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import { findEnclosingPropsCall } from "./parser";
 import { getAliasPartition } from "./frameworks";
 import { isAtPropKeyPosition } from "./completion";
+import { WorkspaceIndex } from "./workspaceIndex";
 
 // ============================================================================
 // Anchor-preset completion — `anchor:tl|t|tr|l|c|r|bl|b|br`
@@ -34,6 +35,8 @@ const PRESETS: Preset[] = [
 export class AnchorPresetCompletionProvider
   implements vscode.CompletionItemProvider
 {
+  constructor(private readonly workspaceIndex?: WorkspaceIndex) {}
+
   provideCompletionItems(
     document: vscode.TextDocument,
     position: vscode.Position
@@ -43,7 +46,8 @@ export class AnchorPresetCompletionProvider
     const detected = findEnclosingPropsCall(
       text,
       cursorOffset,
-      getAliasPartition()
+      getAliasPartition(),
+      this.workspaceIndex?.knownDirectCallTargets()
     );
     if (!detected) {
       return undefined;

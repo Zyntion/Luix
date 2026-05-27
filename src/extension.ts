@@ -256,7 +256,7 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.languages.registerCompletionItemProvider(
       selector,
-      new AnchorPresetCompletionProvider(),
+      new AnchorPresetCompletionProvider(workspaceIndex),
       ":"
     )
   );

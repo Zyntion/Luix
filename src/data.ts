@@ -579,6 +579,32 @@ export const defaultPropsMap: Record<string, string[]> = Object.fromEntries(
   Object.keys(classHierarchy).map((name) => [name, flattenClassProps(name)]),
 );
 
+// Abstract / intermediate classes Roblox doesn't let you `Instance.new(...)`.
+// Used to filter the hierarchy down to the names users can actually
+// construct directly (Vide's `Frame({...})` idiom).
+const ABSTRACT_CLASS_NAMES: ReadonlySet<string> = new Set([
+  "Instance",
+  "GuiBase2d",
+  "GuiObject",
+  "GuiButton",
+  // Luix-internal grouping under which UIListLayout / UIGridLayout / …
+  // share `FillDirection` etc. Not a real Roblox class.
+  "UILayout",
+]);
+
+/**
+ * Roblox UI class names that Vide users can call directly as functions —
+ * `Frame({ Size = … })`, `TextButton({ Activated = … })`, etc. This is the
+ * full hierarchy minus the small handful of abstract / synthetic bases
+ * that aren't constructible. Naturally limited to GUI types because the
+ * extension's `classHierarchy` only contains GUI types — no `Camera`,
+ * `Sound`, `Tween`, etc., so the allowlist can't accidentally fire on a
+ * local variable named after a non-UI Roblox class.
+ */
+export const DIRECT_INSTANTIABLE_CLASS_NAMES: ReadonlySet<string> = new Set(
+  Object.keys(classHierarchy).filter((name) => !ABSTRACT_CLASS_NAMES.has(name))
+);
+
 // ============================================================================
 // createElement aliases
 // ============================================================================

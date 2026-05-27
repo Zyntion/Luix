@@ -167,7 +167,12 @@ export class PropHoverProvider implements vscode.HoverProvider {
     }
 
     // ---- 2. Hovering a prop inside a props table? ----
-    const detected = findEnclosingPropsCall(text, cursorOffset, aliases);
+    const detected = findEnclosingPropsCall(
+      text,
+      cursorOffset,
+      aliases,
+      this.workspaceIndex?.knownDirectCallTargets()
+    );
     if (!detected) {
       return undefined;
     }
