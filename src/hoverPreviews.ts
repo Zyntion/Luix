@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import {
-  extractPropEntries,
+  extractPropEntriesFromDocument,
   findAllCreateElementCalls,
 } from "./parser";
 import { getAliasPartition } from "./frameworks";
@@ -285,7 +285,11 @@ function tryElementPreviewHover(
     call.propsBraceStart + 1,
     call.propsBraceEnd
   );
-  const entries = extractPropEntries(propsBody);
+  const entries = extractPropEntriesFromDocument(
+    text,
+    call.propsBraceStart + 1,
+    call.propsBraceEnd
+  );
   const propMap = new Map<string, string>();
   for (const entry of entries) {
     propMap.set(

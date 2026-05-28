@@ -4,6 +4,263 @@ All notable changes to **Luix** will be documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.4.4]
+
+### Workspace-wide component rename (`F2`)
+
+Pressing `F2` on a component identifier now renames the definition
+**and every call site across the workspace** — including the Vide and
+Fusion direct-call shapes (`MyButton({ … })`, `MyButton { … }`) that
+luau-lsp's rename frequently can't see because the call isn't tied to
+the function definition through types.
+
+- **Conservative gate.** `prepareRename` only accepts identifiers
+  Luix's workspace index has already classified as a component
+  (functions that return an element call or carry a Luix annotation).
+  Pressing `F2` on a random local variable falls back to luau-lsp.
+- **Three reference shapes covered:** the `local function MyButton(…)`
+  / `local MyButton = function(…)` definition, every
+  `e(MyButton, …)` / `Roact.createElement(MyButton, …)` parens-form
+  call site, and every direct `MyButton({ … })` / `MyButton { … }`
+  curried-form call site.
+- **Skipped by design:** member-access references like
+  `obj:MyButton(…)` and `Module.MyButton`, and the
+  `require("…/MyButton")` path basename — the path is a filename, not
+  an identifier, and renaming the file is a separate workflow.
+- **Refuses same-name collisions** so two definitions don't end up
+  indexed under one key.
+
+### Performance & correctness sweep
+
+A small audit shipped a stack of perf and bug fixes that mostly
+matter on big files and large workspaces:
+
+- **Memoised the workspace component-name views**
+  (`WorkspaceIndex.knownComponentNames` / `knownDirectCallTargets`) —
+  previously rebuilt by walking every indexed file every time a
+  provider asked for them, and 4+ providers ask per keystroke. Now
+  cached and invalidated only on real cache mutations / relevant
+  config changes.
+- **Memoised `getAliasPartition` and `getEnabledFrameworks`** — same
+  problem at a smaller scale (~34 call sites, 3–5× per completion
+  invocation). Cache busts on `luix.frameworks`, the per-framework
+  `*.aliases` keys, and `luix.vide.directInstanceCalls`.
+- **Capped the backward brace-walk in `findEnclosingPropsCall`** at
+  16 KB. With the cursor outside any table in a 50K-line file, the
+  unbounded walk used to scan the full document on every keystroke for
+  every provider that calls it. Also cached the compiled `RegExp`
+  objects per alias-key (previously only the alias alternation
+  *string* was cached; the `RegExp` was allocated fresh each call).
+- **Faster `extractPropEntries` for diagnostics / hover previews /
+  rect / gradient.** Added `extractPropEntriesFromDocument(text,
+  start, end)` that reuses the document-level mask cache — the
+  per-substring path always missed the cache, causing ~400+ redundant
+  mask builds per diagnostic recompute on a busy file.
+- **Replaced the per-match brace-walk in deprecation diagnostics
+  with interval-containment** against a single precomputed list of
+  props-table ranges. Was O(matches × document), now O(N + matches ·
+  log C).
+- **Deduped repeated work in
+  `ReactLuauPropsCompletionProvider`** — the `[React.Event.…]`
+  fast-path used to re-detect the enclosing call and re-fetch
+  `getAliasPartition` + `knownDirectCallTargets` after falling
+  through to the normal prop path. One setup pass now, reused.
+- **`scanCache` length-pre-check + size bump** (4 → 8 entries). On
+  big files the value-equality string compare was the dominant cache
+  check cost; length and alias-key are checked first so misses now
+  short-circuit in O(1).
+- **CodeLens references — synchronous count + lazy peek.**
+  `ComponentReferencesLensProvider` used to open every workspace file
+  with a hit for every component, every refresh. Now it computes a
+  synchronous count via `WorkspaceIndex.countCallSites`, and only
+  fetches the actual locations when the user clicks the lens
+  (`luix.peekComponentReferences` command). Also honours the
+  `CancellationToken` VS Code passes in.
+- **Fixed `sortProps.onSave` silently breaking on nested elements.**
+  The previous implementation emitted one TextEdit per call's props
+  body, and nested calls (the textbook UI shape — `Frame > TextLabel
+  > UIPadding`) produced overlapping ranges that VS Code rejects,
+  aborting the whole save formatter. Now emits one edit per
+  outer-most call with the nested sorts spliced in via
+  `sortBodyRecursive`.
+- **Fixed API-dump cache invalidation.** Enabling
+  `luix.useRobloxApiDump` and merging new props for e.g. `Frame` used
+  to leave `ScrollingFrame` / `TextLabel` / etc. with their stale
+  pre-merge flattened prop lists, so descendants never saw the new
+  props until reload. The merge now writes to the *source* hierarchy
+  and rebuilds the derived caches.
+- **Cleared `WorkspaceIndex._persistTimer` in `dispose()`.** A
+  timer armed within 5 s of window close held a closure on the cache
+  and wrote to disk after the extension shut down. One-line fix.
+- **Plugged `imageGutter` double-dispose.** Decoration types were
+  being tracked in both the disposables list *and*
+  `typesByAsset`; `clearAllDecorations` disposed via the map, then
+  `dispose()` later double-disposed via the list. Now tracked only in
+  the map.
+- **Expanded `DiagnosticsManager`'s config-change watch list** to
+  include `frameworks`, the per-framework `*.aliases` keys, and
+  `vide.directInstanceCalls`. Enabling Vide at runtime now refreshes
+  diagnostics on every open file instead of leaving them stale until
+  the next keystroke.
+- **`Luix` output channel** — wired into the asset-thumbnail fetch /
+  CDN failure paths so background failures stop being silent. Open
+  via *Output → Luix*.
+- **Bug fix: workspace-component completions inside a props table.**
+  Typing `e("Frame", { Name = "Test", eTextButt|` used to surface
+  `eTextButton` as a component suggestion even though the cursor was
+  at a prop-key slot. Now suppressed when the cursor is at a key
+  position inside a props table, except for Vide (which allows inline
+  child expressions in that position).
+- **Bug fix: workspace-component completions inside string literals.**
+  Typing `Text = "WEEKLY m|"` used to surface workspace components
+  whose names start with `m` (`Minimap`, `MoneyDisplay`, …) even
+  though the cursor was inside a string. Now suppressed by checking
+  the code mask. Also patched the opt-in
+  `FactoryOpenParenCompletionProvider` against the same edge case
+  (`"some(` inside a string used to look like a factory call to the
+  walker).
+- **Bug fix: all Luix snippets used to fire inside string literals.**
+  Static VS Code snippets fuzzy-match against any character in their
+  prefix — typing a single `r` inside `Text = "Resets in 00:12:34 r"`
+  surfaced `reactEvent`, `rfc`, and `useRef`; typing `eFra` at a
+  prop-key slot inside a props table offered to expand into a full
+  `e("Frame", { ... })` call. *Every* Luix snippet —
+  element constructors (`eFrame`, `nFrame`, `cFrame`, `eTextLabel`,
+  …), hooks (`useState`, `useEffect`, `useRef`, `useMemo`,
+  `useCallback`), `rfc`, `reactEvent`, `cfangles`, `cfanglesrad` —
+  is now served by `ElementSnippetCompletionProvider` and gated:
+
+  - **Code-mask check** suppresses every snippet inside string
+    literals.
+  - **Prop-key-position check** suppresses *element* snippets at key
+    slots, except when the parent framework allows inline child
+    expressions (Vide). Hooks / scaffold / `reactEvent` /
+    `cfangles*` skip this gate because they don't collide with
+    plausible prop-name typing.
+  - **Enabled-frameworks filter** — Fusion-only projects no longer
+    see `eFrame` / `cFrame`, Vide-only projects don't see `eFrame` /
+    `nFrame`, etc. React/Roact-style patterns (hooks, `rfc`,
+    `reactEvent`) only surface when React or Roact is enabled.
+    Framework-agnostic value expressions (`cfangles*`) are
+    unrestricted.
+
+  `snippets/luix.code-snippets` is now empty (kept as a placeholder
+  for the manifest's `contributes.snippets` registration).
+- **Bug fix: completions inside `[…]` computed-key brackets.**
+  Typing `[Reac|` (to write `[React.Event.Activated]` by hand)
+  surfaced workspace components like `ReactCharm` /
+  `ReactErrorBoundary` / `ReactRoblox` because
+  `isAtPropKeyPosition` walked back through `[` and `]`
+  indiscriminately and the providers thought the cursor was at a
+  fresh key slot. Worse, typing `[React.|` then surfaced Frame's
+  `Archivable` / `Name` / `AutoLocalize` / etc. as if it were the
+  start of a prop name in the outer table. Added a new
+  `isInsideComputedKey` helper and gated three providers on it:
+
+  - `ReactLuauPropsCompletionProvider` — bails after the
+    `[React.Event.X|]` / `[React.Change.X|]` fast-path (so those
+    still fire correctly) so the general prop-name path doesn't
+    pollute the dropdown.
+  - `FactoryComponentCompletionProvider` — no workspace components
+    inside `[…]`.
+  - `ElementSnippetCompletionProvider` — no `eFrame` / `reactEvent`
+    / etc. inside `[…]` (the `reactEvent` snippet *expands* to a
+    `[React.Event.…] = function() … end` entry, so triggering it
+    inside an existing `[…]` would have produced nested brackets).
+
+  Also added two **dynamic computed-key starter snippets** that fire
+  *only* inside `[…]` and *only* when React or Roact is enabled:
+
+  - `React.Event` — expands to
+    `React.Event.${1|<every event on the resolved class>|}`. The
+    choice list is built from `flattenClassEvents` on the element
+    Luix detects you're inside (e.g. a `TextButton` gets `Activated`,
+    `MouseButton1Click`, `MouseEnter`, …; a `Frame` gets the
+    `GuiObject` event set). Falls back to `GuiObject` when the class
+    can't be resolved (custom component without an `@extends`).
+  - `React.Change` — same shape, body is
+    `React.Change.${1|<every property on the resolved class>|}`,
+    so any prop you could listen to is one tab away.
+
+  Useful when luau-lsp isn't surfacing the `React` import (it can
+  miss it for various scope / cache reasons), and faster than
+  hand-typing the full key.
+
+- **Bug fix: factory class-name pickers at outer prop-key positions.**
+  Typing `e("Frame", { e("Te|" })` used to surface the Roblox
+  class-name picker (`Frame`, `TextLabel`, …) inside the inner
+  string, even though the inner `e(...)` call sits at a prop-key
+  slot of the outer table — invalid Lua. Both
+  `ClassNameCompletionProvider` (the `"`-triggered picker) and the
+  opt-in `FactoryOpenParenCompletionProvider` (the `(`-triggered
+  picker) now walk back to the alias of the call they're suggesting
+  for and, if that alias sits at a key slot of an outer props
+  table whose framework doesn't allow inline child expressions
+  (i.e. anything other than Vide), suppress the suggestion. Vide's
+  inline-children rule still lets the picker fire inside
+  `create "Frame" { e("Te|" }`.
+
+### Accepted factory snippets add a trailing `,` when they're a list element
+
+Accepting any of Luix's factory-call snippets — `e("Frame", …)`,
+`Roact.createElement("…", …)`, `New "Frame" …`, `create "Frame" …`,
+or the workspace-component shapes from this release — used to land
+the closing `})` / `}` without a trailing comma, so adding a sibling
+element on the next line surfaced a red squiggle until you went back
+and typed `,` yourself.
+
+Luix now appends `,$0` after the close when the call sits as a list
+element of a parent table (its alias is preceded by `{` or `,`), and
+leaves it off in top-level, `return`, assignment, and function-arg
+positions where a trailing comma would be a Lua syntax error.
+
+- **All call shapes covered.** Parens form (`e(...)`,
+  `React.createElement(...)`, `Roact.createElement(...)`) and curried
+  form (`New "..." {...}`, `create "..." {...}`) both pick up the
+  trailing comma when in list context.
+- **All three providers updated.** The string-literal class-name
+  picker (`e("Fr|"`), the open-paren picker
+  (`luix.classNameCompletion.triggerOnOpenParen`), and the
+  workspace-component picker (1.4.4's React + Vide/Fusion paths) all
+  share the same `isPrecededByListElementSeparator` heuristic.
+- **Conservative gate.** Only fires for the textbook
+  "child element inside a parent table" case. Multi-level wrapping
+  (`tab = { foo = e(...) }`) falls through to no-comma, which keeps
+  the snippet safe at the cost of one keystroke in rare cases.
+
+### Workspace components no longer auto-call to `Comp(props)`
+
+luau-lsp sees workspace components as functions with a
+`(props) -> ReactNode` signature, so accepting one in the suggestion
+list expanded it to a *call* — `DailyQuestCard(props)` — which is
+never the form any of the supported frameworks actually want.
+
+Luix now contributes a parallel completion that materialises the
+framework-correct shape in a single keystroke, ranked above luau-lsp's
+call form so Enter does the right thing by default. luau-lsp's
+suggestion still appears beneath ours so you can pick the call form
+when you want it.
+
+- **React / Roact** — fires inside the first-arg slot of a factory
+  call (`e(`, `createElement(`, `React.createElement(`,
+  `Roact.createElement(`). Accepting expands to
+  `e(DailyQuestCard, { $1 })` and lands the cursor inside the props
+  table. Existing auto-paired `)` is consumed; existing trailing
+  `, { ... }` is left intact and only the identifier is inserted.
+- **Vide / Fusion** — fires whenever you type a workspace-component
+  identifier at a value-expression position (no factory prefix
+  needed, since both frameworks invoke custom components directly).
+  Accepting expands to the curried form `DailyQuestCard { $1 }`,
+  which is the idiomatic shape in both. Suppressed when the next
+  char is `(`, `{`, `.`, `:`, or `=` — i.e. when the identifier is
+  already being extended into a call / access / assignment.
+- **Strict prefix-match gate.** Items only surface when your typed
+  prefix matches a component name (case-insensitively), so the
+  dropdown isn't polluted with every workspace component on every
+  identifier keystroke.
+- **Member-access skip.** `obj.MyComp` and `self:MyComp` deliberately
+  don't trigger — those are references, not component calls.
+
 ## [1.4.3]
 
 ### `Size` / `Position` completion now hands you the constructor picker

@@ -9,8 +9,8 @@ import {
   CreateElementCall,
   extractColorLiterals,
   extractPropEntries,
+  extractPropEntriesFromDocument,
   findAllCreateElementCalls,
-  findEnclosingPropsCall,
   scanDocument,
   collectLocalBindings,
 } from "./parser";
@@ -56,13 +56,25 @@ export class DiagnosticsManager implements vscode.Disposable {
       ),
       vscode.workspace.onDidChangeConfiguration((e) => {
         if (
+          // Diagnostic-feature toggles.
           configChangeAffects(e, "warnReservedPropNames") ||
           configChangeAffects(e, "deprecationDiagnostics") ||
           configChangeAffects(e, "autoImport") ||
           configChangeAffects(e, "propValidation") ||
           configChangeAffects(e, "richText") ||
           configChangeAffects(e, "contrastWarnings") ||
-          configChangeAffects(e, "unusedProps")
+          configChangeAffects(e, "unusedProps") ||
+          // Framework / alias keys — without these, enabling Vide at
+          // runtime wouldn't make `New "Frame" { … }` start linting
+          // until the next keystroke in each open file. Union with the
+          // list `WorkspaceIndex` watches so the two stay aligned.
+          configChangeAffects(e, "frameworks") ||
+          configChangeAffects(e, "react.aliases") ||
+          configChangeAffects(e, "roact.aliases") ||
+          configChangeAffects(e, "fusion.aliases") ||
+          configChangeAffects(e, "vide.aliases") ||
+          configChangeAffects(e, "createElementAliases") ||
+          configChangeAffects(e, "vide.directInstanceCalls")
         ) {
           this.refreshAllOpenDocuments();
         }
@@ -277,13 +289,19 @@ function computeDeprecationDiagnostics(
   const out: vscode.Diagnostic[] = [];
   const masked = applyMask(text, buildCodeMask(text));
   const aliases = getAliasPartition();
-  const directComponents = workspaceIndex.knownDirectCallTargets();
+
+  // Compute every props-table range *once* up front instead of doing a
+  // backward brace-walk per regex match. The old `findEnclosingPropsCall`
+  // dispatch inside the loop was O(matches × N) per keystroke on big
+  // files; this is O(N + matches·log(C)).
+  const propsRanges = collectPropsRanges(text, aliases);
+  const inProps = (offset: number) => containedIn(propsRanges, offset);
 
   // `Font = Enum.Font.X` inside a createElement props table.
   const fontRe = /\bFont\s*=\s*Enum\.Font\.([A-Za-z_]\w*)/g;
   let m: RegExpExecArray | null;
   while ((m = fontRe.exec(masked)) !== null) {
-    if (!isOffsetInsideAnyPropsTable(text, m.index, aliases, directComponents)) {
+    if (!inProps(m.index)) {
       continue;
     }
     const range = new vscode.Range(
@@ -305,7 +323,7 @@ function computeDeprecationDiagnostics(
   const typoRe = /(?<![A-Za-z0-9_])TextColor(?!\d)\s*=/g;
   let t: RegExpExecArray | null;
   while ((t = typoRe.exec(masked)) !== null) {
-    if (!isOffsetInsideAnyPropsTable(text, t.index, aliases, directComponents)) {
+    if (!inProps(t.index)) {
       continue;
     }
     const propStart = t.index;
@@ -327,15 +345,66 @@ function computeDeprecationDiagnostics(
   return out;
 }
 
-function isOffsetInsideAnyPropsTable(
+/**
+ * Sorted intervals (by `start`) of every props-table body in the
+ * document — one entry per createElement-style call that has a props
+ * brace. Built once per diagnostic recompute and queried via
+ * `containedIn` for each diagnostic regex match. Replaces a per-match
+ * `findEnclosingPropsCall` walk that was O(matches × document).
+ */
+interface PropsRange {
+  start: number;
+  end: number;
+}
+
+function collectPropsRanges(
   text: string,
-  offset: number,
-  aliases: AliasPartition,
-  directComponents?: ReadonlySet<string>
-): boolean {
-  return (
-    findEnclosingPropsCall(text, offset, aliases, directComponents) !== undefined
-  );
+  aliases: AliasPartition
+): PropsRange[] {
+  const out: PropsRange[] = [];
+  for (const call of findAllCreateElementCalls(text, aliases)) {
+    if (
+      call.propsBraceStart === undefined ||
+      call.propsBraceEnd === undefined
+    ) {
+      continue;
+    }
+    out.push({ start: call.propsBraceStart, end: call.propsBraceEnd });
+  }
+  out.sort((a, b) => a.start - b.start);
+  return out;
+}
+
+/**
+ * Binary-search containment check — returns true iff `offset` is
+ * inside at least one of the (sorted-by-start) ranges. Used by the
+ * diagnostic regex loops above; runs in O(log N) per query versus the
+ * old O(N) brace walk.
+ */
+function containedIn(ranges: PropsRange[], offset: number): boolean {
+  let lo = 0;
+  let hi = ranges.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >>> 1;
+    const r = ranges[mid];
+    if (offset < r.start) {
+      hi = mid - 1;
+    } else if (offset > r.end) {
+      lo = mid + 1;
+    } else {
+      return true;
+    }
+  }
+  // Nested calls mean ranges can overlap — if the binary search landed
+  // in a sibling, walk back through any earlier range that still
+  // contains the offset. In practice this loops at most O(nesting
+  // depth) ≈ 5-10.
+  for (let i = Math.min(lo, ranges.length - 1); i >= 0; i--) {
+    const r = ranges[i];
+    if (r.start <= offset && offset <= r.end) return true;
+    if (r.end < offset && i < ranges.length - 1) break;
+  }
+  return false;
 }
 
 // ============================================================================
@@ -360,7 +429,11 @@ function computePropValidationDiagnostics(
     }
     const bodyStart = call.propsBraceStart + 1;
     const propsBody = text.slice(bodyStart, call.propsBraceEnd);
-    const entries = extractPropEntries(propsBody);
+    const entries = extractPropEntriesFromDocument(
+      text,
+      bodyStart,
+      call.propsBraceEnd
+    );
     if (entries.length === 0) {
       continue;
     }
@@ -722,7 +795,11 @@ function readColor3Prop(
     return undefined;
   }
   const body = text.slice(call.propsBraceStart + 1, call.propsBraceEnd);
-  const entries = extractPropEntries(body);
+  const entries = extractPropEntriesFromDocument(
+    text,
+    call.propsBraceStart + 1,
+    call.propsBraceEnd
+  );
   const entry = entries.find((e) => e.key === key);
   if (!entry) return undefined;
   const value = body.slice(entry.valueStart, entry.valueEnd).trim();
@@ -743,8 +820,11 @@ function findKeyRange(
   if (call.propsBraceStart === undefined || call.propsBraceEnd === undefined) {
     return undefined;
   }
-  const body = text.slice(call.propsBraceStart + 1, call.propsBraceEnd);
-  const entries = extractPropEntries(body);
+  const entries = extractPropEntriesFromDocument(
+    text,
+    call.propsBraceStart + 1,
+    call.propsBraceEnd
+  );
   const entry = entries.find((e) => e.key === key);
   if (!entry) return undefined;
   return {
@@ -867,7 +947,11 @@ function computeMissingRichTextDiagnostics(
     }
     const bodyStart = call.propsBraceStart + 1;
     const propsBody = text.slice(bodyStart, call.propsBraceEnd);
-    const entries = extractPropEntries(propsBody);
+    const entries = extractPropEntriesFromDocument(
+      text,
+      bodyStart,
+      call.propsBraceEnd
+    );
 
     let textEntry: { keyStart: number; keyEnd: number } | undefined;
     // Suppress the warning whenever `RichText` appears at all — it

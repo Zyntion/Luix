@@ -1,8 +1,17 @@
 // Framework specifications. Each entry tells the parser which call shapes
 // to recognize and how the framework's quirks (children layout, events as
 // props, etc.) should be reflected in completions and inlay hints.
+//
+// The three "getters" exported below — getEnabledFrameworks,
+// getAliasPartition, getDirectInstanceClassNames — are on the hot path:
+// they're called 3-5× per completion-provider invocation across ~30
+// call sites. Each used to re-read config, re-flatten arrays, and
+// re-dedupe via `.includes()` on every call. They're now memoised at
+// module level and invalidated by a single config-change listener
+// registered once at first import (see `resetFrameworkCaches`).
 
-import { getConfig } from "./configCompat";
+import * as vscode from "vscode";
+import { configChangeAffects, getConfig } from "./configCompat";
 import { DIRECT_INSTANTIABLE_CLASS_NAMES } from "./data";
 
 export type FrameworkId = "react" | "roact" | "fusion" | "vide";
@@ -66,11 +75,50 @@ export const FRAMEWORKS: Record<FrameworkId, FrameworkSpec> = {
 
 const ALL_FRAMEWORK_IDS: FrameworkId[] = ["react", "roact", "fusion", "vide"];
 
+// ---- Cache --------------------------------------------------------------
+
+let _enabledFrameworks: FrameworkSpec[] | undefined;
+let _aliasPartition: AliasPartition | undefined;
+// `null` here means "cached as definitely undefined" so we can tell a
+// cache miss apart from a positive "feature is off" result.
+let _directInstanceClasses: ReadonlySet<string> | null | undefined;
+
+function resetFrameworkCaches(): void {
+  _enabledFrameworks = undefined;
+  _aliasPartition = undefined;
+  _directInstanceClasses = undefined;
+}
+
+// Wire cache invalidation to every config key these getters read.
+// Registered once at module init; the disposable leaks for the lifetime
+// of the extension host process, which is acceptable for a single
+// per-load registration (no growth over time).
+try {
+  vscode.workspace.onDidChangeConfiguration((e) => {
+    if (
+      configChangeAffects(e, "frameworks") ||
+      configChangeAffects(e, "react.aliases") ||
+      configChangeAffects(e, "roact.aliases") ||
+      configChangeAffects(e, "fusion.aliases") ||
+      configChangeAffects(e, "vide.aliases") ||
+      configChangeAffects(e, "vide.directInstanceCalls")
+    ) {
+      resetFrameworkCaches();
+    }
+  });
+} catch {
+  // `vscode.workspace` is unavailable in some unit-test bootstrap
+  // contexts. The cache just stays warm forever in that case, which
+  // matches the previous "no cache" behaviour from the caller's view.
+}
+
 /**
  * Returns the active framework specs, filtered by the `luix.frameworks`
- * setting and with any per-framework alias overrides applied.
+ * setting and with any per-framework alias overrides applied. Memoised
+ * — invalidated on config change.
  */
 export function getEnabledFrameworks(): FrameworkSpec[] {
+  if (_enabledFrameworks) return _enabledFrameworks;
   const enabled = getConfig<FrameworkId[]>("frameworks", ALL_FRAMEWORK_IDS);
   const ids = Array.isArray(enabled) && enabled.length > 0
     ? enabled.filter((id): id is FrameworkId =>
@@ -78,7 +126,7 @@ export function getEnabledFrameworks(): FrameworkSpec[] {
       )
     : ALL_FRAMEWORK_IDS;
 
-  return ids.map((id) => {
+  _enabledFrameworks = ids.map((id) => {
     const base = FRAMEWORKS[id];
     const override = getConfig<string[]>(`${id}.aliases`, []);
     if (Array.isArray(override) && override.length > 0) {
@@ -86,11 +134,13 @@ export function getEnabledFrameworks(): FrameworkSpec[] {
     }
     return base;
   });
+  return _enabledFrameworks;
 }
 
 /**
  * Collected aliases across all enabled frameworks, partitioned by call
- * shape. Parsers use this to build two separate regexes.
+ * shape. Parsers use this to build two separate regexes. Memoised —
+ * invalidated on config change.
  */
 export interface AliasPartition {
   parens: string[];
@@ -98,6 +148,7 @@ export interface AliasPartition {
 }
 
 export function getAliasPartition(): AliasPartition {
+  if (_aliasPartition) return _aliasPartition;
   const result: AliasPartition = { parens: [], curried: [] };
   for (const framework of getEnabledFrameworks()) {
     const bucket =
@@ -108,6 +159,7 @@ export function getAliasPartition(): AliasPartition {
       }
     }
   }
+  _aliasPartition = result;
   return result;
 }
 
@@ -141,20 +193,21 @@ export function findFrameworkForAlias(
  * Returns undefined when the feature shouldn't apply, so callers can
  * skip the union with workspace components entirely. When applicable,
  * the returned set is the curated UI-only allowlist from `data.ts`
- * (no `Camera`, `Sound`, `Tween`, `Workspace`, …).
+ * (no `Camera`, `Sound`, `Tween`, `Workspace`, …). Memoised.
  */
 export function getDirectInstanceClassNames(): ReadonlySet<string> | undefined {
-  const enabled = getConfig<FrameworkId[]>("frameworks", ALL_FRAMEWORK_IDS);
-  const ids = Array.isArray(enabled) && enabled.length > 0
-    ? enabled.filter((id): id is FrameworkId =>
-        ALL_FRAMEWORK_IDS.includes(id as FrameworkId)
-      )
-    : ALL_FRAMEWORK_IDS;
-  if (!ids.includes("vide")) {
+  if (_directInstanceClasses !== undefined) {
+    return _directInstanceClasses ?? undefined;
+  }
+  const frameworks = getEnabledFrameworks();
+  if (!frameworks.some((f) => f.id === "vide")) {
+    _directInstanceClasses = null;
     return undefined;
   }
   if (!getConfig<boolean>("vide.directInstanceCalls", true)) {
+    _directInstanceClasses = null;
     return undefined;
   }
-  return DIRECT_INSTANTIABLE_CLASS_NAMES;
+  _directInstanceClasses = DIRECT_INSTANTIABLE_CLASS_NAMES;
+  return _directInstanceClasses;
 }

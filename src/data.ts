@@ -605,6 +605,24 @@ export const DIRECT_INSTANTIABLE_CLASS_NAMES: ReadonlySet<string> = new Set(
   Object.keys(classHierarchy).filter((name) => !ABSTRACT_CLASS_NAMES.has(name))
 );
 
+/**
+ * Clear every derived cache and rebuild `defaultPropsMap` from the
+ * current `classHierarchy`. Call this whenever the hierarchy itself
+ * has been mutated (today: only the Roblox API-dump merge in
+ * `apiDump.ts`). Without it, descendants of any class we extended
+ * would keep returning their pre-merge flattened prop list, so e.g.
+ * adding a prop to `Frame` wouldn't surface on `ScrollingFrame` or
+ * `TextLabel` until the extension reloaded.
+ */
+export function rebuildDerivedClassData(): void {
+  propsCache.clear();
+  eventsCache.clear();
+  getPropTypeCache.clear();
+  for (const name of Object.keys(classHierarchy)) {
+    defaultPropsMap[name] = flattenClassProps(name);
+  }
+}
+
 // ============================================================================
 // createElement aliases
 // ============================================================================

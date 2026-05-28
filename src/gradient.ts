@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 import {
   applyMask,
   buildCodeMask,
-  extractPropEntries,
+  extractPropEntriesFromDocument,
   findAllCreateElementCalls,
 } from "./parser";
 import { getAliasPartition } from "./frameworks";
@@ -713,7 +713,11 @@ export function findParentBackgroundColor3(
   }
   const bodyStart = parent.propsBraceStart + 1;
   const propsBody = text.slice(bodyStart, parent.propsBraceEnd);
-  const entries = extractPropEntries(propsBody);
+  const entries = extractPropEntriesFromDocument(
+    text,
+    bodyStart,
+    parent.propsBraceEnd
+  );
   const bgEntry = entries.find((e) => e.key === "BackgroundColor3");
   if (!bgEntry) {
     return undefined;
@@ -764,7 +768,11 @@ export function findUIGradientContext(
   }
   const bodyStart = host.propsBraceStart + 1;
   const propsBody = text.slice(bodyStart, host.propsBraceEnd);
-  const entries = extractPropEntries(propsBody);
+  const entries = extractPropEntriesFromDocument(
+    text,
+    bodyStart,
+    host.propsBraceEnd
+  );
 
   const ctx: UIGradientContext = {
     propsBraceStart: host.propsBraceStart,
@@ -1099,7 +1107,11 @@ export class GradientEditorManager implements vscode.Disposable {
       }
       const bodyStart = uiGradientCall.propsBraceStart + 1;
       const propsBody = text.slice(bodyStart, uiGradientCall.propsBraceEnd);
-      const entries = extractPropEntries(propsBody);
+      const entries = extractPropEntriesFromDocument(
+        text,
+        bodyStart,
+        uiGradientCall.propsBraceEnd
+      );
       for (const entry of entries) {
         const absValueStart = bodyStart + entry.valueStart;
         const absValueEnd = bodyStart + entry.valueEnd;
@@ -1339,7 +1351,11 @@ async function applyUIGradientEdit(
   }
   const bodyStart = call.propsBraceStart + 1;
   const propsBody = text.slice(bodyStart, call.propsBraceEnd);
-  const entries = extractPropEntries(propsBody);
+  const entries = extractPropEntriesFromDocument(
+    text,
+    bodyStart,
+    call.propsBraceEnd
+  );
   const { outerIndent, innerStep } = indentationFor(
     document,
     uri,

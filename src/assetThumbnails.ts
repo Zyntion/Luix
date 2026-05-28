@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import { getConfig } from "./configCompat";
+import { logWarn } from "./output";
 
 // ============================================================================
 // Roblox asset thumbnail helpers — shared by the hover provider and the
@@ -114,6 +115,9 @@ export async function fetchAssetThumbnail(
   try {
     const res = await fetch(url, { signal: AbortSignal.timeout(10_000) });
     if (!res.ok) {
+      logWarn(
+        `Thumbnail API returned ${res.status} for asset ${assetId}`
+      );
       return cacheFailure(cacheKey, now, "Unknown");
     }
     const payload = (await res.json()) as {
@@ -137,7 +141,8 @@ export async function fetchAssetThumbnail(
       return { url: null, state };
     }
     return cacheFailure(cacheKey, now, state);
-  } catch {
+  } catch (err) {
+    logWarn(`Thumbnail API fetch failed for asset ${assetId}`, err);
     return cacheFailure(cacheKey, now, "Unknown");
   }
 }
@@ -228,13 +233,17 @@ export async function ensureThumbnailFile(
   try {
     const res = await fetch(cdnUrl, { signal: AbortSignal.timeout(15_000) });
     if (!res.ok) {
+      logWarn(
+        `Thumbnail CDN returned ${res.status} for asset ${assetId}`
+      );
       return undefined;
     }
     const buffer = new Uint8Array(await res.arrayBuffer());
     await ensureCacheDirReady(cacheDir);
     await vscode.workspace.fs.writeFile(filePath, buffer);
     return filePath;
-  } catch {
+  } catch (err) {
+    logWarn(`Thumbnail download failed for asset ${assetId}`, err);
     return undefined;
   }
 }

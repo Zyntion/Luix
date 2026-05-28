@@ -109,6 +109,18 @@ export class WorkspaceIndex implements vscode.Disposable {
   private _persistTimer: NodeJS.Timeout | undefined;
   private _scanTimers = new Map<string, NodeJS.Timeout>();
   private context: vscode.ExtensionContext | undefined;
+  /**
+   * Memoised view of every component name across the cache, lazily built
+   * on first read after a cache mutation. Completion / hover / anchor /
+   * diagnostics paths read this 4+ times per keystroke; rebuilding by
+   * walking every file each call dominated provider overhead on large
+   * workspaces. Invalidate via `invalidateNameCaches()` whenever the
+   * cache or the gating config changes.
+   */
+  private _componentNamesCache: Set<string> | undefined;
+  /** Memoised union of workspace components + Vide instance class
+   *  names (when the setting is on). Same invalidation rules. */
+  private _directCallTargetsCache: Set<string> | undefined;
   /** Fires after the index reaches a new steady state — used by the
    *  Components sidebar to refresh. Debounced so a burst of keystrokes
    *  doesn't rebuild the tree dozens of times per second. */
@@ -123,6 +135,13 @@ export class WorkspaceIndex implements vscode.Disposable {
       this._changeTimer = undefined;
       this._onDidChange.fire();
     }, 200);
+  }
+
+  /** Drop the memoised component-name views. Called from every site
+   *  that mutates `this.cache` so the next read rebuilds fresh. */
+  private invalidateNameCaches(): void {
+    this._componentNamesCache = undefined;
+    this._directCallTargetsCache = undefined;
   }
 
   constructor(context?: vscode.ExtensionContext) {
@@ -142,6 +161,7 @@ export class WorkspaceIndex implements vscode.Disposable {
       }),
       watcher.onDidDelete((uri) => {
         if (this.cache.delete(uri.toString())) {
+          this.invalidateNameCaches();
           this.scheduleChange();
         }
       }),
@@ -177,8 +197,14 @@ export class WorkspaceIndex implements vscode.Disposable {
           configChangeAffects(e, "exclude")
         ) {
           this.cache.clear();
+          this.invalidateNameCaches();
           this.warmupPromise = this.warmup().catch(() => {});
           this.scheduleChange();
+        } else if (configChangeAffects(e, "vide.directInstanceCalls")) {
+          // Doesn't change the parsed cache, just the direct-call gate;
+          // bust the union cache so the next read picks up the new
+          // built-in-class set (or absence of it).
+          this._directCallTargetsCache = undefined;
         }
       })
     );
@@ -271,6 +297,7 @@ export class WorkspaceIndex implements vscode.Disposable {
       callSites,
       fingerprint: existing?.fingerprint,
     });
+    this.invalidateNameCaches();
     this.scheduleChange();
     this.schedulePersist();
   }
@@ -416,13 +443,17 @@ export class WorkspaceIndex implements vscode.Disposable {
    * setup work per keystroke. If this becomes a hotspot, memoise on
    * `onDidChangeIndex`.
    */
-  knownComponentNames(): Set<string> {
+  knownComponentNames(): ReadonlySet<string> {
+    if (this._componentNamesCache) {
+      return this._componentNamesCache;
+    }
     const out = new Set<string>();
     for (const entry of this.cache.values()) {
       for (const name of entry.components.keys()) {
         out.add(name);
       }
     }
+    this._componentNamesCache = out;
     return out;
   }
 
@@ -438,15 +469,41 @@ export class WorkspaceIndex implements vscode.Disposable {
    * `getPropsForClass`, which already looks up workspace components
    * before built-ins.
    */
-  knownDirectCallTargets(): Set<string> {
-    const out = this.knownComponentNames();
+  knownDirectCallTargets(): ReadonlySet<string> {
+    if (this._directCallTargetsCache) {
+      return this._directCallTargetsCache;
+    }
+    // Build a fresh copy of the component names so the in-place add of
+    // built-in class names doesn't pollute `knownComponentNames`'s
+    // cached view (which is workspace-only by contract).
+    const out = new Set(this.knownComponentNames());
     const instances = getDirectInstanceClassNames();
     if (instances) {
       for (const name of instances) {
         out.add(name);
       }
     }
+    this._directCallTargetsCache = out;
     return out;
+  }
+
+  /**
+   * Synchronous count of how many call sites a component has across the
+   * indexed workspace. Doesn't open any files — pure cache walk. Used
+   * by the CodeLens provider's "N references" label so it can compute
+   * counts for every component in the document without paying the
+   * per-file `openTextDocument` cost that `findCallSites` incurs;
+   * the actual Locations are only materialised when the user clicks the
+   * lens.
+   */
+  countCallSites(componentName: string): number {
+    const key = componentName.split(".").pop() ?? componentName;
+    let total = 0;
+    for (const entry of this.cache.values()) {
+      const hits = entry.callSites.get(key);
+      if (hits) total += hits.length;
+    }
+    return total;
   }
 
   /**
@@ -507,6 +564,14 @@ export class WorkspaceIndex implements vscode.Disposable {
     if (this._changeTimer) {
       clearTimeout(this._changeTimer);
       this._changeTimer = undefined;
+    }
+    // A persist timer armed within the last 5s would otherwise hold a
+    // closure over `this.cache` past dispose and write to disk after
+    // the extension shut down. Easy to reproduce by quickly closing
+    // and reopening a window during heavy editing.
+    if (this._persistTimer) {
+      clearTimeout(this._persistTimer);
+      this._persistTimer = undefined;
     }
     for (const t of this._scanTimers.values()) {
       clearTimeout(t);

@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import {
   AnnotationCompletionProvider,
   ClassNameCompletionProvider,
+  FactoryComponentCompletionProvider,
   FactoryOpenParenCompletionProvider,
   ReactLuauPropsCompletionProvider,
 } from "./completion";
@@ -41,6 +42,9 @@ import {
   purgeAllThumbnails,
 } from "./assetThumbnails";
 import { WorkspaceIndex } from "./workspaceIndex";
+import { getOutputChannelDisposable } from "./output";
+import { ComponentRenameProvider } from "./rename";
+import { ElementSnippetCompletionProvider } from "./elementSnippets";
 import {
   DEFAULT_ALIASES,
   PROP_TYPES,
@@ -102,6 +106,12 @@ export function activate(context: vscode.ExtensionContext) {
     { language: "luau", scheme: "file" },
   ];
 
+  // Register the Luix output channel up-front so background failures
+  // (asset thumbnail fetches, API-dump downloads, persist writes) have
+  // somewhere visible to log. Users can open it via "Output: Show
+  // Output Channels…" → Luix.
+  context.subscriptions.push(getOutputChannelDisposable());
+
   const workspaceIndex = new WorkspaceIndex(context);
 
   // Kick off the optional Roblox API-dump fetch (no-op when the
@@ -129,7 +139,7 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.languages.registerCompletionItemProvider(
       selector,
-      new ClassNameCompletionProvider(),
+      new ClassNameCompletionProvider(workspaceIndex),
       '"',
       "'"
     )
@@ -141,8 +151,36 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.languages.registerCompletionItemProvider(
       selector,
-      new FactoryOpenParenCompletionProvider(),
+      new FactoryOpenParenCompletionProvider(workspaceIndex),
       "("
+    )
+  );
+
+  // Element-construction snippets (`eFrame`, `nFrame`, `cFrame`, etc.).
+  // Migrated from `snippets/luix.code-snippets` because the static
+  // snippet system had no awareness of strings or prop-key positions —
+  // typing `Fra` inside a string used to surface every `*Frame`
+  // snippet. The provider gates by code mask, prop-key position, and
+  // enabled frameworks (Fusion users don't see `eFrame`/`cFrame`, etc.).
+  context.subscriptions.push(
+    vscode.languages.registerCompletionItemProvider(
+      selector,
+      new ElementSnippetCompletionProvider(workspaceIndex)
+    )
+  );
+
+  // Workspace-component completion inside `e(<partial>|`. Sidesteps
+  // luau-lsp's "insert function as call" behaviour, which expands an
+  // accepted `DailyQuestCard` into `DailyQuestCard(props)` rather than
+  // leaving it as a reference for React's factory call. No explicit
+  // trigger char — VS Code re-evaluates completions as identifier
+  // chars are typed, which is when this needs to fire. The provider
+  // self-gates on `<alias>(<partial>|` so it stays quiet outside the
+  // first-arg slot of a factory call.
+  context.subscriptions.push(
+    vscode.languages.registerCompletionItemProvider(
+      selector,
+      new FactoryComponentCompletionProvider(workspaceIndex)
     )
   );
 
@@ -261,11 +299,45 @@ export function activate(context: vscode.ExtensionContext) {
     )
   );
 
+  // Workspace-wide component rename — `F2` on a component identifier
+  // renames the definition + every createElement-style call site + every
+  // Vide/Fusion direct-call site (`MyComp({ … })`, `MyComp { … }`) across
+  // the workspace. Covers the call shapes luau-lsp's rename can't see.
+  context.subscriptions.push(
+    vscode.languages.registerRenameProvider(
+      selector,
+      new ComponentRenameProvider(workspaceIndex)
+    )
+  );
+
   // "N references" CodeLens above every component definition.
+  // The lens displays a synchronous workspace-wide count; the actual
+  // call-site Locations are resolved lazily by the command below when
+  // the user clicks. This avoids opening every workspace file on every
+  // lens refresh — previously dominated CPU on large projects.
   const referencesLens = new ComponentReferencesLensProvider(workspaceIndex);
   context.subscriptions.push(
     referencesLens,
-    vscode.languages.registerCodeLensProvider(selector, referencesLens)
+    vscode.languages.registerCodeLensProvider(selector, referencesLens),
+    vscode.commands.registerCommand(
+      "luix.peekComponentReferences",
+      async (
+        sourceUri: vscode.Uri,
+        position: vscode.Position,
+        componentName: string
+      ) => {
+        const sites = await workspaceIndex.findCallSites(componentName);
+        const locations = sites.map(
+          (s) => new vscode.Location(s.uri, s.range)
+        );
+        await vscode.commands.executeCommand(
+          "editor.action.showReferences",
+          sourceUri,
+          position,
+          locations
+        );
+      }
+    )
   );
   // Frame-stats CodeLens — `▸ N descendants, D layers` above heavy
   // subtrees. Off by default (visual noise).

@@ -10,6 +10,7 @@ import {
 } from "./data";
 import {
   AliasPartition,
+  buildCodeMask,
   findEnclosingFactoryStringArg,
   findEnclosingPropsCall,
   pushUnique,
@@ -19,6 +20,7 @@ import {
   FRAMEWORKS,
   findFrameworkForAlias,
   getAliasPartition,
+  getEnabledFrameworks,
 } from "./frameworks";
 import { getConfig } from "./configCompat";
 import { WorkspaceIndex } from "./workspaceIndex";
@@ -38,6 +40,21 @@ export class ReactLuauPropsCompletionProvider
   ): Promise<vscode.CompletionItem[] | undefined> {
     const text = document.getText();
     const cursorOffset = document.offsetAt(position);
+    // Single setup pass — both code paths below need these, and each
+    // helper does enough work that calling them twice per keystroke
+    // (which is how this used to work — the React.Event fast-path
+    // re-detected after falling through) was a real cost on big files.
+    const aliases = getAliasPartition();
+    const directTargets = this.workspaceIndex.knownDirectCallTargets();
+    const detected = findEnclosingPropsCall(
+      text,
+      cursorOffset,
+      aliases,
+      directTargets
+    );
+    if (!detected) {
+      return undefined;
+    }
 
     // Fast-path: `[React.Event.|` and `[React.Change.|` inside a props
     // table. The cursor must be in an event/change-key slot for this to
@@ -47,15 +64,6 @@ export class ReactLuauPropsCompletionProvider
     const eventMatch = /\[\s*React\.Event\.([A-Za-z_]\w*)?$/.exec(before);
     const changeMatch = /\[\s*React\.Change\.([A-Za-z_]\w*)?$/.exec(before);
     if (eventMatch || changeMatch) {
-      const detected = findEnclosingPropsCall(
-        text,
-        cursorOffset,
-        getAliasPartition(),
-        this.workspaceIndex.knownDirectCallTargets()
-      );
-      if (!detected) {
-        return undefined;
-      }
       const baseClass = await resolveEffectiveClass(
         detected.className,
         document,
@@ -90,21 +98,21 @@ export class ReactLuauPropsCompletionProvider
       });
     }
 
-    const detected = findEnclosingPropsCall(
-      text,
-      cursorOffset,
-      getAliasPartition(),
-      this.workspaceIndex.knownDirectCallTargets()
-    );
-    if (!detected) {
-      return undefined;
-    }
-
     // Only fire when the cursor is at a *key* slot — not mid-value.
     // Otherwise typing `FontFace = Font.|` would surface every prop
     // name (BackgroundColor3, …) in the suggest list alongside the
     // `Font.fromName` / `Font.fromId` constructors.
     if (!isAtPropKeyPosition(document, position)) {
+      return undefined;
+    }
+    // Also bail when the cursor is inside an unclosed `[` — typing
+    // `[React.|` is *not* a fresh key slot, it's the middle of a
+    // computed-key expression, and we'd otherwise pollute the
+    // suggest list with Frame's `Archivable` / `Name` / etc. The
+    // `[React.Event.X|]` / `[React.Change.X|]` fast-path above
+    // already returned its own list for those specific shapes; this
+    // catches the leftover cases (`[Reac|`, `[myExpr|`, etc.).
+    if (isInsideComputedKey(document, position)) {
       return undefined;
     }
 
@@ -247,19 +255,49 @@ function extendRangeOverTrailingComma(
 export class ClassNameCompletionProvider
   implements vscode.CompletionItemProvider
 {
+  constructor(private readonly workspaceIndex?: WorkspaceIndex) {}
+
   provideCompletionItems(
     document: vscode.TextDocument,
     position: vscode.Position
   ): vscode.ProviderResult<vscode.CompletionItem[]> {
     const text = document.getText();
     const cursorOffset = document.offsetAt(position);
+    const aliases = getAliasPartition();
     const ctx = findEnclosingFactoryStringArg(
       text,
       cursorOffset,
-      getAliasPartition()
+      aliases
     );
     if (!ctx) {
       return undefined;
+    }
+
+    // Suppress when the whole `e("…"|)` call is itself at a prop-key
+    // slot of an *outer* props table — typing `e("Frame", { e("Te|" })`
+    // is invalid Lua (function call as a table key), and we shouldn't
+    // pollute the suggest list with class names there. Exception: when
+    // the outer framework allows inline children (Vide), the inner
+    // call IS a valid child expression at that slot.
+    const aliasOffset = findCallAliasOffset(text, ctx);
+    if (aliasOffset !== undefined) {
+      const outer = findEnclosingPropsCall(
+        text,
+        aliasOffset,
+        aliases,
+        this.workspaceIndex?.knownDirectCallTargets()
+      );
+      if (
+        outer &&
+        isAtPropKeyPosition(document, document.positionAt(aliasOffset))
+      ) {
+        const outerFw = outer.alias
+          ? findFrameworkForAlias(outer.alias)
+          : undefined;
+        if (!outerFw || outerFw.childrenLayout !== "inline") {
+          return undefined;
+        }
+      }
     }
 
     // Range starts AFTER the opening quote so VS Code's filter sees the
@@ -287,16 +325,25 @@ export class ClassNameCompletionProvider
     // The opening quote stays in the document (it's outside the range), so
     // the snippet never re-emits it.
     const q = ctx.quote;
+    // Append `,$0` after the closing `}` / `})` *only* when the call sits
+    // in a list-element context (its alias is preceded by `{` or `,`) so
+    // a following sibling element doesn't need the user to manually add
+    // the separator. Skipped in top-level / assignment / function-arg
+    // contexts where a trailing comma would be a Lua syntax error.
+    const tailComma =
+      !ctx.hasPropsAfter && isInListElementContext(text, ctx.stringStart, ctx.callShape)
+        ? ",$0"
+        : "";
     const trailing = (() => {
       if (ctx.hasPropsAfter) {
         // Just re-emit the closing quote — props table already exists.
         return q;
       }
       if (ctx.callShape === "parens") {
-        return `${q}, {\n\t$1,\n})`;
+        return `${q}, {\n\t$1,\n})${tailComma}`;
       }
       // Curried form (Fusion / Vide).
-      return `${q} {\n\t$1,\n}`;
+      return `${q} {\n\t$1,\n}${tailComma}`;
     })();
 
     return INSERTABLE_CLASS_NAMES.map((name, index) => {
@@ -329,6 +376,91 @@ const INSERTABLE_CLASS_NAMES = Object.keys(defaultPropsMap)
   .filter((name) => !SYNTHETIC_CLASSES.has(name))
   .sort();
 
+/**
+ * From a `findEnclosingFactoryStringArg` context, walk back through
+ * the call's punctuation (parens or whitespace, then the alias chars)
+ * to return the offset where the alias identifier begins. Used by
+ * `ClassNameCompletionProvider` to anchor an outer-context check at
+ * the same position that `findEnclosingPropsCall` would treat as the
+ * "inner element" for prop-key gating.
+ *
+ * Returns undefined when the structure doesn't look right — caller
+ * should treat that as "no outer-context check possible" and fall
+ * through to suggestion.
+ */
+function findCallAliasOffset(
+  text: string,
+  ctx: import("./parser").EnclosingStringArg
+): number | undefined {
+  let i = ctx.stringStart - 1;
+  // Skip whitespace between the alias's punctuation and the string.
+  while (i >= 0 && /[ \t]/.test(text[i])) i--;
+  if (ctx.callShape === "parens") {
+    // For parens form, the `(` sits between alias and string.
+    if (text[i] !== "(") return undefined;
+    i--;
+    while (i >= 0 && /[ \t]/.test(text[i])) i--;
+  }
+  // Walk back across the alias identifier (allow dotted forms like
+  // `React.createElement` / `Fusion.New`).
+  while (i >= 0 && /[A-Za-z0-9_.]/.test(text[i])) i--;
+  const aliasStart = i + 1;
+  return aliasStart < ctx.stringStart ? aliasStart : undefined;
+}
+
+/**
+ * Returns true when the char immediately preceding `pos` (skipping
+ * whitespace / newlines) is `{` or `,` — i.e. the construct starting
+ * at `pos` is appearing as a list element in a Lua table constructor,
+ * where a trailing comma after it is both valid and useful (lets the
+ * user drop in a sibling on the next line without manually adding the
+ * separator).
+ *
+ * False otherwise: in `local x = X`, `return X`, `f(X)`, etc., a
+ * trailing comma would be a Lua syntax error.
+ *
+ * The check is intentionally conservative — it only fires the comma
+ * for the textbook "child element inside a table" case. Multi-level
+ * indirection (`tab = { foo = X }` etc.) falls through to no-comma,
+ * which is the safe default.
+ */
+function isPrecededByListElementSeparator(
+  text: string,
+  pos: number
+): boolean {
+  let i = pos - 1;
+  while (i >= 0 && /\s/.test(text[i])) i--;
+  if (i < 0) return false;
+  const prev = text[i];
+  return prev === "{" || prev === ",";
+}
+
+/**
+ * Variant for the string-literal class-name path: walks back from the
+ * opening quote, across the call's punctuation (`(` for parens, just
+ * whitespace for curried) and the alias identifier, then defers to
+ * `isPrecededByListElementSeparator` for the actual decision.
+ */
+function isInListElementContext(
+  text: string,
+  stringStart: number,
+  callShape: "parens" | "curried"
+): boolean {
+  let i = stringStart - 1;
+  // Skip whitespace between the alias punctuation and the opening quote.
+  while (i >= 0 && /[ \t]/.test(text[i])) i--;
+  // For parens, also skip the `(`.
+  if (callShape === "parens") {
+    if (text[i] !== "(") return false;
+    i--;
+    while (i >= 0 && /[ \t]/.test(text[i])) i--;
+  }
+  // Skip the alias identifier (allow dotted forms like React.createElement).
+  while (i >= 0 && /[A-Za-z0-9_.]/.test(text[i])) i--;
+  // `i` now points just before the alias's first char.
+  return isPrecededByListElementSeparator(text, i + 1);
+}
+
 // ============================================================================
 // Class-name completion right after `e(` — opt-in, off by default
 // ============================================================================
@@ -343,6 +475,8 @@ const INSERTABLE_CLASS_NAMES = Object.keys(defaultPropsMap)
 export class FactoryOpenParenCompletionProvider
   implements vscode.CompletionItemProvider
 {
+  constructor(private readonly workspaceIndex?: WorkspaceIndex) {}
+
   provideCompletionItems(
     document: vscode.TextDocument,
     position: vscode.Position
@@ -364,12 +498,41 @@ export class FactoryOpenParenCompletionProvider
     if (aliases.parens.length === 0) return undefined;
     // Walk back from cursor: must be `(`.
     if (text[offset - 1] !== "(") return undefined;
+    // Suppress when the `(` is inside a string literal — `"some(text"`
+    // would otherwise look indistinguishable from a real `e(` call to
+    // this walker. The code mask marks string interiors as `false`.
+    const mask = buildCodeMask(text);
+    if (mask[offset - 1] === false) return undefined;
     // Walk further back over the alias identifier (allow dotted).
     let i = offset - 2;
     const end = i + 1;
     while (i >= 0 && /[A-Za-z0-9_.]/.test(text[i])) i--;
     const alias = text.slice(i + 1, end);
     if (!aliases.parens.includes(alias)) return undefined;
+    const aliasOffset = i + 1;
+
+    // Suppress when this call sits at a prop-key slot of an outer
+    // props table — same rationale as ClassNameCompletionProvider:
+    // typing `e(` at a key position is invalid Lua. Exception: Vide
+    // and other inline-children frameworks allow it as a child
+    // expression.
+    const outer = findEnclosingPropsCall(
+      text,
+      aliasOffset,
+      aliases,
+      this.workspaceIndex?.knownDirectCallTargets()
+    );
+    if (
+      outer &&
+      isAtPropKeyPosition(document, document.positionAt(aliasOffset))
+    ) {
+      const outerFw = outer.alias
+        ? findFrameworkForAlias(outer.alias)
+        : undefined;
+      if (!outerFw || outerFw.childrenLayout !== "inline") {
+        return undefined;
+      }
+    }
     // Make sure what's between the `(` and the cursor is empty (we
     // walked back from offset-1 = `(`, so that's already guaranteed).
     // Check what's immediately after the cursor: empty, whitespace, or
@@ -390,6 +553,15 @@ export class FactoryOpenParenCompletionProvider
       document.positionAt(replaceEnd)
     );
 
+    // Same list-element heuristic the string-literal class-name path
+    // uses: trailing comma only when the call is a child element of a
+    // table constructor (preceding non-whitespace char is `{` or `,`).
+    // The alias starts at `i + 1` (where the loop above left off), so
+    // we look at what precedes that.
+    const tailComma = isPrecededByListElementSeparator(text, i + 1)
+      ? ",$0"
+      : "";
+
     return INSERTABLE_CLASS_NAMES.map((name, index) => {
       const item = new vscode.CompletionItem(
         name,
@@ -400,11 +572,268 @@ export class FactoryOpenParenCompletionProvider
       item.sortText = String(index).padStart(4, "0");
       item.range = range;
       item.insertText = new vscode.SnippetString(
-        `"${name}", {\n\t$1,\n})`
+        `"${name}", {\n\t$1,\n})${tailComma}`
       );
       return item;
     });
   }
+}
+
+// ============================================================================
+// Workspace-component completion — every framework's call shape
+// ============================================================================
+//
+// luau-lsp sees workspace components as functions with a
+// `(props) -> ReactNode` signature, so accepting one expands it to a
+// *call* — `DailyQuestCard(props)`. That's never the form any of the
+// supported frameworks actually want:
+//
+//   - React / Roact (parens):  `e(DailyQuestCard, { … })`
+//   - Vide / Fusion (curried): `DailyQuestCard { … }`  (or  `DailyQuestCard({ … })`)
+//
+// This provider contributes a parallel completion that materialises
+// the framework-correct form in one keystroke, ranked above luau-lsp's
+// call form so Enter does the right thing by default. luau-lsp's
+// suggestion still appears beneath ours, so the choice stays yours.
+
+interface CallShapeContext {
+  /** Where the *replacement* range starts (the partial identifier). */
+  identStart: number;
+  /** Where the *replacement* range ends. May consume an auto-paired close. */
+  replaceEnd: number;
+  /** Snippet trailing text appended after the component name. */
+  trailing: string;
+  /** Used in the completion-item detail line for clarity. */
+  shapeLabel: string;
+}
+
+export class FactoryComponentCompletionProvider
+  implements vscode.CompletionItemProvider
+{
+  constructor(private readonly workspaceIndex: WorkspaceIndex) {}
+
+  provideCompletionItems(
+    document: vscode.TextDocument,
+    position: vscode.Position
+  ): vscode.ProviderResult<vscode.CompletionItem[]> {
+    const text = document.getText();
+    const offset = document.offsetAt(position);
+
+    // Walk back over the partial identifier the user has typed so far.
+    let identStart = offset;
+    while (identStart > 0 && /[A-Za-z0-9_]/.test(text[identStart - 1])) {
+      identStart--;
+    }
+    const partial = text.slice(identStart, offset);
+    if (partial.length === 0) return undefined;
+
+    // Suppress when the cursor is inside a string literal — typing
+    // `Text = "WEEKLY m|"` shouldn't surface workspace components
+    // whose names happen to start with `m`. The code mask flags
+    // string interiors as `false`; the partial's last char is what
+    // sits immediately before the cursor.
+    if (identStart > 0) {
+      const mask = buildCodeMask(text);
+      if (mask[offset - 1] === false) return undefined;
+    }
+    // Suppress when the cursor is inside an unclosed `[` — typing
+    // `[Reac|` to start `[React.Event.Activated]` shouldn't surface
+    // workspace components like `ReactCharm` / `ReactRoblox`. The
+    // user is writing a key expression, not invoking a component.
+    if (isInsideComputedKey(document, position)) return undefined;
+
+    // Skip when the partial is the tail of a member access (`obj.MyComp`,
+    // `self:MyComp`, `Mod.SubMod.MyComp`). The user isn't *invoking* the
+    // component there — they're either referencing it or calling a method.
+    if (identStart > 0) {
+      const before = text[identStart - 1];
+      if (before === "." || before === ":") return undefined;
+    }
+
+    // Suppress when the cursor is at a prop-*key* slot inside a props
+    // table (`e("Frame", { Name = ..., eTextButt|` ). The user is
+    // naming a prop, not invoking a component. Exception: Vide allows
+    // inline children as table entries (`create "Frame" { eTextButt|`
+    // is a valid child expression), so the suppression is gated to
+    // frameworks whose `childrenLayout` isn't `"inline"`.
+    const aliases = getAliasPartition();
+    const enclosing = findEnclosingPropsCall(
+      text,
+      offset,
+      aliases,
+      this.workspaceIndex.knownDirectCallTargets()
+    );
+    if (enclosing && isAtPropKeyPosition(document, position)) {
+      const framework = enclosing.alias
+        ? findFrameworkForAlias(enclosing.alias)
+        : undefined;
+      if (!framework || framework.childrenLayout !== "inline") {
+        return undefined;
+      }
+    }
+
+    // Match workspace components by case-insensitive prefix so the
+    // dropdown only carries plausibly-relevant entries. Keeps us from
+    // dumping all N workspace components on every identifier keystroke.
+    const components = this.workspaceIndex.knownComponentNames();
+    if (components.size === 0) return undefined;
+    const matches: string[] = [];
+    const lowerPartial = partial.toLowerCase();
+    for (const name of components) {
+      if (name.toLowerCase().startsWith(lowerPartial)) {
+        matches.push(name);
+      }
+    }
+    if (matches.length === 0) return undefined;
+    matches.sort();
+
+    // Figure out which call shape to materialise. The parens-form
+    // factories (React, Roact) require `<alias>(<partial>|` — if we're
+    // there, that wins. Otherwise we fall back to the direct-call
+    // (Vide/Fusion) shape, if a curried framework is enabled.
+    const ctx =
+      detectReactParensContext(text, identStart, offset) ??
+      detectDirectCallContext(text, identStart, offset);
+    if (!ctx) return undefined;
+
+    const range = new vscode.Range(
+      document.positionAt(ctx.identStart),
+      document.positionAt(ctx.replaceEnd)
+    );
+
+    const out: vscode.CompletionItem[] = [];
+    for (let idx = 0; idx < matches.length; idx++) {
+      const name = matches[idx];
+      const item = new vscode.CompletionItem(
+        name,
+        vscode.CompletionItemKind.Class
+      );
+      item.detail = `Luix component (${ctx.shapeLabel})`;
+      // Rank above luau-lsp's call-form so the framework-shape insertion
+      // is the default Enter target.
+      item.sortText = `00_${String(idx).padStart(4, "0")}`;
+      item.filterText = name;
+      item.range = range;
+      item.insertText = new vscode.SnippetString(`${name}${ctx.trailing}`);
+      out.push(item);
+    }
+    return out;
+  }
+}
+
+/**
+ * React/Roact case: cursor is in `<parens-alias>(<partial>|`.
+ *   `e(D|`              → insert `Name, {\n\t$1,\n})`
+ *   `e(D|)`             → same, consume the auto-paired `)`
+ *   `e(D|, { ... })`    → insert just `Name` — props arg already exists
+ *   `e(D|<other>`       → bail (broken / unfamiliar structure)
+ */
+function detectReactParensContext(
+  text: string,
+  identStart: number,
+  cursor: number
+): CallShapeContext | undefined {
+  // Look back across optional whitespace, then expect `(`.
+  let i = identStart - 1;
+  while (i >= 0 && /[ \t]/.test(text[i])) i--;
+  if (text[i] !== "(") return undefined;
+  const parenIdx = i;
+
+  // Alias identifier (possibly dotted) directly before the `(`.
+  let aliasStart = parenIdx - 1;
+  while (aliasStart >= 0 && /[A-Za-z0-9_.]/.test(text[aliasStart])) {
+    aliasStart--;
+  }
+  const alias = text.slice(aliasStart + 1, parenIdx);
+  if (alias.length === 0) return undefined;
+  if (!getAliasPartition().parens.includes(alias)) return undefined;
+
+  // Append `,$0` after the closing `})` only when this call sits as a
+  // list element of a parent table — otherwise a trailing comma after
+  // a top-level / assigned / return-value call would be a syntax
+  // error. Same heuristic as the string-literal class-name path.
+  const tailComma = isPrecededByListElementSeparator(text, aliasStart + 1)
+    ? ",$0"
+    : "";
+
+  // Inspect what follows the cursor to decide between full expansion,
+  // identifier-only, and bail-out.
+  let after = cursor;
+  while (after < text.length && /[ \t]/.test(text[after])) after++;
+  const nextChar = text[after] ?? "";
+  if (nextChar === ")") {
+    return {
+      identStart,
+      replaceEnd: after + 1,
+      trailing: `, {\n\t$1,\n})${tailComma}`,
+      shapeLabel: alias + "(...)",
+    };
+  }
+  if (nextChar === ",") {
+    return {
+      identStart,
+      replaceEnd: cursor,
+      trailing: "",
+      shapeLabel: alias + "(...)",
+    };
+  }
+  if (nextChar === "" || nextChar === "\n" || nextChar === "\r") {
+    return {
+      identStart,
+      replaceEnd: cursor,
+      trailing: `, {\n\t$1,\n})${tailComma}`,
+      shapeLabel: alias + "(...)",
+    };
+  }
+  return undefined;
+}
+
+/**
+ * Vide/Fusion case: bare `<partial>|` at a value-expression position.
+ * Inserts the curried form `Name {\n\t$1,\n}` because it's the
+ * idiomatic shape in both frameworks. Suppressed when:
+ *
+ *   - Neither Vide nor Fusion is enabled (no point — direct calls
+ *     aren't a React/Roact idiom).
+ *   - The next non-whitespace char is `(`, `{`, `.`, `:`, or `=` —
+ *     the user is already extending the identifier into a call /
+ *     access / assignment, our snippet would conflict.
+ */
+function detectDirectCallContext(
+  text: string,
+  identStart: number,
+  cursor: number
+): CallShapeContext | undefined {
+  const frameworks = getEnabledFrameworks();
+  const hasCurried = frameworks.some((f) => f.callShape === "curried");
+  if (!hasCurried) return undefined;
+
+  let after = cursor;
+  while (after < text.length && /[ \t]/.test(text[after])) after++;
+  const nextChar = text[after] ?? "";
+  if (
+    nextChar === "(" ||
+    nextChar === "{" ||
+    nextChar === "." ||
+    nextChar === ":" ||
+    nextChar === "="
+  ) {
+    return undefined;
+  }
+
+  // Trailing-comma decision: bare `Comp {…}` inside a parent table
+  // ought to end with `,` so a following sibling doesn't trip a parse
+  // error. Skipped for top-level / return / assignment positions.
+  const tailComma = isPrecededByListElementSeparator(text, identStart)
+    ? ",$0"
+    : "";
+
+  return {
+    identStart,
+    replaceEnd: cursor,
+    trailing: ` {\n\t$1,\n}${tailComma}`,
+    shapeLabel: "curried",
+  };
 }
 
 // ============================================================================
@@ -602,7 +1031,7 @@ async function resolveUserEntry(
  * Used by the Event/Change completion path: resolve a component name down
  * to the Roblox host class it ultimately extends.
  */
-async function resolveEffectiveClass(
+export async function resolveEffectiveClass(
   className: string,
   document: vscode.TextDocument | undefined,
   workspaceIndex: WorkspaceIndex | undefined
@@ -794,4 +1223,32 @@ export function isAtPropKeyPosition(
   }
   // No boundary found — assume key position (top of file, no `=`).
   return true;
+}
+
+/**
+ * True when the cursor sits inside an unclosed `[` on the current
+ * line — i.e. somewhere inside a computed-key expression like
+ * `[React.Event.Foo|]`. Used by the prop / component / snippet
+ * providers to bail when they'd otherwise treat the inside of the
+ * brackets as a fresh key slot (because `isAtPropKeyPosition` walks
+ * back through `[` and `]` indiscriminately) and pollute the
+ * suggest list with prop names that would land inside the expression.
+ *
+ * The dedicated `[React.Event.X|]` / `[React.Change.X|]` fast-path
+ * in `ReactLuauPropsCompletionProvider` deliberately *does* fire
+ * inside computed keys; callers gating on this helper run *after*
+ * that fast-path so it stays unaffected.
+ */
+export function isInsideComputedKey(
+  document: vscode.TextDocument,
+  position: vscode.Position
+): boolean {
+  const line = document.lineAt(position.line).text;
+  let depth = 0;
+  for (let i = 0; i < position.character && i < line.length; i++) {
+    const c = line[i];
+    if (c === "[") depth++;
+    else if (c === "]") depth--;
+  }
+  return depth > 0;
 }

@@ -34,7 +34,8 @@ export class ComponentReferencesLensProvider
   }
 
   async provideCodeLenses(
-    document: vscode.TextDocument
+    document: vscode.TextDocument,
+    token: vscode.CancellationToken
   ): Promise<vscode.CodeLens[]> {
     if (!getConfig<boolean>("componentReferencesLens.enabled", true)) {
       return [];
@@ -47,6 +48,9 @@ export class ComponentReferencesLensProvider
     const lines = text.split("\n");
     const out: vscode.CodeLens[] = [];
     for (const [name, info] of components) {
+      // Bail early if VS Code has moved on — typical when the user
+      // keeps typing past the previous lens refresh.
+      if (token.isCancellationRequested) return [];
       const line = lines[info.defLineIndex] ?? "";
       // Anchor the lens at the line of the function definition. Indent
       // by the existing leading whitespace so it lines up with the body
@@ -55,32 +59,25 @@ export class ComponentReferencesLensProvider
       const pos = new vscode.Position(info.defLineIndex, indent.length);
       const range = new vscode.Range(pos, pos);
 
-      const sites = await this.workspaceIndex.findCallSites(name);
-      // Exclude self-references inside the defining function body if
-      // we can identify them — heuristic: same file, lens line.
-      const externalCount = sites.filter(
-        (s) =>
-          s.uri.toString() !== document.uri.toString() ||
-          s.range.start.line !== info.defLineIndex
-      ).length;
+      // Synchronous count walk — no `openTextDocument` per component,
+      // which used to dominate the lens refresh on large workspaces.
+      // Self-references in the defining file aren't excluded here
+      // (would require opening the file to know lines); the count is
+      // for the workspace-wide "N references" label, and the actual
+      // Locations are resolved lazily when the user clicks.
+      const totalCount = this.workspaceIndex.countCallSites(name);
 
       const title =
-        externalCount === 0
+        totalCount === 0
           ? "No references"
-          : externalCount === 1
+          : totalCount === 1
             ? "1 reference"
-            : `${externalCount} references`;
+            : `${totalCount} references`;
 
       const lens = new vscode.CodeLens(range, {
         title,
-        command:
-          externalCount === 0 ? "" : "editor.action.showReferences",
-        arguments:
-          externalCount === 0
-            ? []
-            : [document.uri, pos, sites.map((s) =>
-                new vscode.Location(s.uri, s.range)
-              )],
+        command: totalCount === 0 ? "" : "luix.peekComponentReferences",
+        arguments: totalCount === 0 ? [] : [document.uri, pos, name],
       });
       out.push(lens);
     }

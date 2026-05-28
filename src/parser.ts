@@ -299,6 +299,56 @@ function escapeRegex(s: string): string {
   return s.replace(/[.+*?^$()[\]{}|\\]/g, "\\$&");
 }
 
+// Compiled-RegExp caches for the two shapes findEnclosingPropsCall
+// uses. Keyed by the alias-alternation string — same key the
+// alternation cache uses, so a hit there means a hit here too once
+// the patterns are warmed. Eliminates `new RegExp(...)` allocation
+// on every keystroke per provider.
+const parensPatternCache = new Map<string, RegExp>();
+const curriedPatternCache = new Map<string, RegExp>();
+
+function parensPatternFor(aliasPattern: string): RegExp {
+  const hit = parensPatternCache.get(aliasPattern);
+  if (hit) return hit;
+  const re = new RegExp(
+    `(?:^|[^A-Za-z0-9_.])(${aliasPattern})\\s*\\(\\s*` +
+      `(?:"([A-Za-z_][A-Za-z0-9_]*)"|'([A-Za-z_][A-Za-z0-9_]*)'|` +
+      `([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*))` +
+      `\\s*,\\s*$`
+  );
+  parensPatternCache.set(aliasPattern, re);
+  return re;
+}
+
+function curriedPatternFor(aliasPattern: string): RegExp {
+  const hit = curriedPatternCache.get(aliasPattern);
+  if (hit) return hit;
+  const re = new RegExp(
+    `(?:^|[^A-Za-z0-9_.])(${aliasPattern})\\s+` +
+      `(?:"([A-Za-z_][A-Za-z0-9_]*)"|'([A-Za-z_][A-Za-z0-9_]*)'|` +
+      `([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*))` +
+      `\\s*$`
+  );
+  curriedPatternCache.set(aliasPattern, re);
+  return re;
+}
+
+// Module-level direct-call patterns — they don't depend on aliases.
+const DIRECT_PARENS_PATTERN =
+  /(?:^|[^A-Za-z0-9_.:])([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*$/;
+const DIRECT_CURRIED_PATTERN =
+  /(?:^|[^A-Za-z0-9_.:])([A-Za-z_][A-Za-z0-9_]*)\s*$/;
+
+/**
+ * Maximum bytes the backward brace-walk in `findEnclosingPropsCall`
+ * scans before giving up. Props tables in real React/Vide/Fusion code
+ * fit comfortably under a few KB; 16 KB is generous and prevents the
+ * worst case (cursor at the bottom of a 50K-line file with no
+ * enclosing `{` → scanning the full document on every keystroke for
+ * every provider that uses the function).
+ */
+const MAX_BACKWARD_SCAN = 16 * 1024;
+
 // ============================================================================
 // findEnclosingPropsCall — used by the completion + hover providers
 // ============================================================================
@@ -328,8 +378,12 @@ export function findEnclosingPropsCall(
   let braceDepth = 0;
   let parenDepth = 0;
   let openBraceIdx = -1;
+  // Cap how far back we'll walk. With the cursor sitting outside any
+  // table (top of a 50K-line file, say), the unbounded walk used to
+  // scan the entire document on every keystroke per provider.
+  const stopAt = Math.max(0, cursorIndex - MAX_BACKWARD_SCAN);
 
-  for (let i = cursorIndex - 1; i >= 0; i--) {
+  for (let i = cursorIndex - 1; i >= stopAt; i--) {
     if (!mask[i]) {
       continue;
     }
@@ -364,12 +418,7 @@ export function findEnclosingPropsCall(
   // 1) Try parens form: FUNC(ARG, $
   if (partition.parens.length > 0) {
     const aliasPattern = buildAliasAlternation(partition.parens);
-    const pattern = new RegExp(
-      `(?:^|[^A-Za-z0-9_.])(${aliasPattern})\\s*\\(\\s*` +
-        `(?:"([A-Za-z_][A-Za-z0-9_]*)"|'([A-Za-z_][A-Za-z0-9_]*)'|` +
-        `([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*))` +
-        `\\s*,\\s*$`
-    );
+    const pattern = parensPatternFor(aliasPattern);
     const match = pattern.exec(before);
     if (match) {
       const alias = match[1];
@@ -391,12 +440,7 @@ export function findEnclosingPropsCall(
   // 2) Try curried form: FUNC "ARG" $    (no comma, no second paren)
   if (partition.curried.length > 0) {
     const aliasPattern = buildAliasAlternation(partition.curried);
-    const pattern = new RegExp(
-      `(?:^|[^A-Za-z0-9_.])(${aliasPattern})\\s+` +
-        `(?:"([A-Za-z_][A-Za-z0-9_]*)"|'([A-Za-z_][A-Za-z0-9_]*)'|` +
-        `([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*))` +
-        `\\s*$`
-    );
+    const pattern = curriedPatternFor(aliasPattern);
     const match = pattern.exec(before);
     if (match) {
       const alias = match[1];
@@ -427,9 +471,7 @@ export function findEnclosingPropsCall(
   //    table is almost always a bare local from a `require`.
   if (directComponents && directComponents.size > 0) {
     // 3a) Direct parens:  IDENT(  $
-    const directParens =
-      /(?:^|[^A-Za-z0-9_.:])([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*$/;
-    const parensMatch = directParens.exec(before);
+    const parensMatch = DIRECT_PARENS_PATTERN.exec(before);
     if (parensMatch && directComponents.has(parensMatch[1])) {
       const name = parensMatch[1];
       return {
@@ -441,9 +483,7 @@ export function findEnclosingPropsCall(
       };
     }
     // 3b) Direct curried:  IDENT  $   (followed by `{`)
-    const directCurried =
-      /(?:^|[^A-Za-z0-9_.:])([A-Za-z_][A-Za-z0-9_]*)\s*$/;
-    const curriedMatch = directCurried.exec(before);
+    const curriedMatch = DIRECT_CURRIED_PATTERN.exec(before);
     if (curriedMatch && directComponents.has(curriedMatch[1])) {
       const name = curriedMatch[1];
       return {
@@ -659,6 +699,27 @@ export interface PropEntry {
  */
 export function extractPropEntries(bodyText: string): PropEntry[] {
   const masked = applyMask(bodyText, buildCodeMask(bodyText));
+  return parsePropEntriesFromMasked(masked);
+}
+
+/**
+ * Faster overload for callers that already have the *full document
+ * text* in hand — `applyMask(fullText, buildCodeMask(fullText))` hits
+ * the document-level mask cache instead of rebuilding the mask for a
+ * substring (which never sees a cache hit). A single diagnostic
+ * recompute on a busy file calls this ~hundreds of times — each call
+ * used to rebuild the mask from scratch.
+ */
+export function extractPropEntriesFromDocument(
+  fullText: string,
+  bodyStart: number,
+  bodyEnd: number
+): PropEntry[] {
+  const masked = applyMask(fullText, buildCodeMask(fullText));
+  return parsePropEntriesFromMasked(masked.slice(bodyStart, bodyEnd));
+}
+
+function parsePropEntriesFromMasked(masked: string): PropEntry[] {
   const out: PropEntry[] = [];
   let i = 0;
   while (i < masked.length) {
@@ -1283,11 +1344,15 @@ function findFunctionDefinitions(maskedText: string): FunctionDef[] {
 
 interface ScanCacheEntry {
   text: string;
+  textLen: number;
   aliasesKey: string;
   result: Map<string, DocumentComponentInfo>;
 }
 const scanCache: ScanCacheEntry[] = [];
-const SCAN_CACHE_MAX = 4;
+// Bumped from 4 → 8: the active set of "documents being inspected
+// concurrently" can exceed 4 in a busy session (current editor +
+// diagnostics on a few open files + codeLens + hover on a peeked file).
+const SCAN_CACHE_MAX = 8;
 
 export function scanDocument(
   text: string,
@@ -1296,12 +1361,19 @@ export function scanDocument(
   const partition = asPartition(aliases);
   const aliasesKey =
     partition.parens.join("|") + " " + partition.curried.join("|");
+  const len = text.length;
   for (let i = scanCache.length - 1; i >= 0; i--) {
-    if (scanCache[i].text === text && scanCache[i].aliasesKey === aliasesKey) {
-      const hit = scanCache.splice(i, 1)[0];
-      scanCache.push(hit);
-      return hit.result;
-    }
+    const entry = scanCache[i];
+    // Cheap rejections first: text length and alias-key are O(1) and
+    // O(short-string), so we only pay the full O(N) string-equality
+    // cost when a real hit is plausible. On big files this keeps the
+    // cache check at near-constant time for misses.
+    if (entry.textLen !== len) continue;
+    if (entry.aliasesKey !== aliasesKey) continue;
+    if (entry.text !== text) continue;
+    const hit = scanCache.splice(i, 1)[0];
+    scanCache.push(hit);
+    return hit.result;
   }
 
   const { masked } = getMaskedDoc(text);
@@ -1362,7 +1434,7 @@ export function scanDocument(
     });
   }
 
-  scanCache.push({ text, aliasesKey, result: components });
+  scanCache.push({ text, textLen: len, aliasesKey, result: components });
   if (scanCache.length > SCAN_CACHE_MAX) {
     scanCache.shift();
   }

@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 import {
   applyMask,
   buildCodeMask,
-  extractPropEntries,
+  extractPropEntriesFromDocument,
   findAllCreateElementCalls,
 } from "./parser";
 import { getAliasPartition } from "./frameworks";
@@ -75,7 +75,11 @@ export function findRectImageCalls(text: string): RectImageCall[] {
     }
     const bodyStart = c.propsBraceStart + 1;
     const propsBody = text.slice(bodyStart, c.propsBraceEnd);
-    const entries = extractPropEntries(propsBody);
+    const entries = extractPropEntriesFromDocument(
+      text,
+      bodyStart,
+      c.propsBraceEnd
+    );
     let assetId: string | undefined;
     let imageRectOffset: { x: number; y: number } | undefined;
     let imageRectSize: { x: number; y: number } | undefined;
@@ -193,7 +197,11 @@ function findSiblingAspectConstraint(
       continue;
     }
     const propsBody = text.slice(c.propsBraceStart + 1, c.propsBraceEnd);
-    const entries = extractPropEntries(propsBody);
+    const entries = extractPropEntriesFromDocument(
+      text,
+      c.propsBraceStart + 1,
+      c.propsBraceEnd
+    );
     const ar = entries.find((e) => e.key === "AspectRatio");
     if (ar) {
       const num = Number(
@@ -440,7 +448,11 @@ async function applyRectEdit(
   }
   const bodyStart = call.propsBraceStart + 1;
   const propsBody = text.slice(bodyStart, call.propsBraceEnd);
-  const entries = extractPropEntries(propsBody);
+  const entries = extractPropEntriesFromDocument(
+    text,
+    bodyStart,
+    call.propsBraceEnd
+  );
   const lineText = document.lineAt(
     document.positionAt(call.aliasStart).line
   ).text;

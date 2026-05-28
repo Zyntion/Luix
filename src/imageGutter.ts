@@ -168,7 +168,10 @@ export class ImageGutterDecorator implements vscode.Disposable {
           gutterIconSize: "contain",
         });
         this.typesByAsset.set(assetId, type);
-        this.disposables.push(type);
+        // NOTE: decoration types are owned exclusively by `typesByAsset`
+        // so `clearAllDecorations()` can dispose + drop them without
+        // `dispose()` later double-disposing the same types via
+        // `this.disposables`. The dispose method below handles them.
         // After the thumbnail lands, re-apply for any visible editor that
         // currently shows the same asset.
         for (const ed of vscode.window.visibleTextEditors) {
@@ -270,6 +273,13 @@ export class ImageGutterDecorator implements vscode.Disposable {
       d.dispose();
     }
     this.disposables = [];
+    // Decoration types are owned by `typesByAsset` exclusively (not
+    // mirrored into `disposables`) so this is the only place they get
+    // disposed. `clearAllDecorations()` empties the map, so anything
+    // still here is live and needs disposing.
+    for (const type of this.typesByAsset.values()) {
+      type.dispose();
+    }
     this.typesByAsset.clear();
   }
 }

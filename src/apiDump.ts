@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import { getConfig } from "./configCompat";
-import { defaultPropsMap } from "./data";
+import { classHierarchy, defaultPropsMap, rebuildDerivedClassData } from "./data";
 
 // ============================================================================
 // Roblox API-dump augmentation (opt-in, background)
@@ -121,9 +121,15 @@ function mergeIntoBuiltins(dump: ApiDump): void {
   for (const cls of dump.Classes) {
     if (cls?.Name) byName.set(cls.Name, cls);
   }
+  let mutated = false;
   for (const className of Object.keys(defaultPropsMap)) {
     const cls = byName.get(className);
     if (!cls?.Members) continue;
+    const hierarchyEntry = classHierarchy[className];
+    if (!hierarchyEntry) continue;
+    // Dedupe against the *flattened* prop list (which includes inherited
+    // props from synthetic intermediate classes like `GuiObject`).
+    // Otherwise we'd re-add inherited props onto every subclass.
     const existing = new Set(defaultPropsMap[className]);
     for (const m of cls.Members) {
       if (m.MemberType !== "Property") continue;
@@ -138,8 +144,17 @@ function mergeIntoBuiltins(dump: ApiDump): void {
       ) {
         continue;
       }
-      defaultPropsMap[className].push(m.Name);
+      // Push to the *source of truth* (classHierarchy[name].own) so
+      // descendants pick the prop up when we re-flatten below. The
+      // previous implementation mutated `defaultPropsMap[className]`
+      // directly, which left ScrollingFrame / TextLabel / etc. with
+      // their stale pre-merge flattened lists.
+      hierarchyEntry.own.push(m.Name);
       existing.add(m.Name);
+      mutated = true;
     }
+  }
+  if (mutated) {
+    rebuildDerivedClassData();
   }
 }

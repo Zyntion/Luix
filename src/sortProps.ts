@@ -484,6 +484,74 @@ export function sortPropsBody(
   return "\n" + lines.join("\n") + "\n" + trailingIndent;
 }
 
+/**
+ * Recursively sort a body together with every nested createElement
+ * call's body, splicing the sorted nested bodies into the parent's
+ * working copy *before* sorting the parent. Returns the fully sorted
+ * body, or `undefined` when nothing in the subtree changed (so the
+ * caller can skip emitting an edit).
+ *
+ * Children are spliced from end-to-start so each splice doesn't shift
+ * the offsets of children we haven't visited yet — same trick the rest
+ * of the codebase uses for in-place body edits.
+ */
+function sortBodyRecursive(
+  text: string,
+  bodyStart: number,
+  bodyEnd: number,
+  allCalls: Array<{
+    propsBraceStart: number;
+    propsBraceEnd: number;
+  }>,
+  categoryOrder: string[]
+): string | undefined {
+  let body = text.slice(bodyStart, bodyEnd);
+  let changed = false;
+
+  // Calls strictly inside this body — both endpoints inside (bodyStart,
+  // bodyEnd) — then narrow to DIRECT children so we don't double-process
+  // grandchildren (they get handled when we recurse into the child).
+  const inside = allCalls.filter(
+    (c) =>
+      c.propsBraceStart > bodyStart && c.propsBraceEnd < bodyEnd
+  );
+  const directChildren = inside
+    .filter(
+      (c) =>
+        !inside.some(
+          (other) =>
+            other !== c &&
+            other.propsBraceStart < c.propsBraceStart &&
+            c.propsBraceEnd < other.propsBraceEnd
+        )
+    )
+    .sort((a, b) => b.propsBraceStart - a.propsBraceStart);
+
+  for (const child of directChildren) {
+    const innerSorted = sortBodyRecursive(
+      text,
+      child.propsBraceStart + 1,
+      child.propsBraceEnd,
+      allCalls,
+      categoryOrder
+    );
+    if (innerSorted !== undefined) {
+      const localStart = child.propsBraceStart + 1 - bodyStart;
+      const localEnd = child.propsBraceEnd - bodyStart;
+      body = body.slice(0, localStart) + innerSorted + body.slice(localEnd);
+      changed = true;
+    }
+  }
+
+  const sortedSelf = sortPropsBody(body, categoryOrder);
+  if (sortedSelf !== undefined) {
+    body = sortedSelf;
+    changed = true;
+  }
+
+  return changed ? body : undefined;
+}
+
 // ============================================================================
 // Code action — manual "Sort props by category"
 // ============================================================================
@@ -600,31 +668,50 @@ export class SortPropsOnSaveListener implements vscode.Disposable {
   ): Promise<vscode.TextEdit[]> {
     const text = document.getText();
     const aliases = getAliasPartition();
-    const calls = findAllCreateElementCalls(text, aliases);
+    const calls = findAllCreateElementCalls(text, aliases).filter(
+      (c): c is typeof c & {
+        propsBraceStart: number;
+        propsBraceEnd: number;
+      } =>
+        c.propsBraceStart !== undefined && c.propsBraceEnd !== undefined
+    );
+    if (calls.length === 0) {
+      return [];
+    }
     const order = getConfig<string[]>(
       "sortProps.categoryOrder",
       DEFAULT_CATEGORY_ORDER
     );
+
+    // Per-call edits used to overlap when an outer createElement
+    // contained inner ones (the canonical UI shape — `Frame` with
+    // children) — VS Code rejects overlapping TextEdits and aborts the
+    // whole save formatter, silently. Fix: only emit one edit per
+    // *outer-most* call; sortBodyRecursive splices the sorted nested
+    // bodies into the outer's body before we sort the outer itself, so
+    // a single non-overlapping edit covers the full tree.
+    const isStrictlyInside = (
+      inner: { propsBraceStart: number; propsBraceEnd: number },
+      outer: { propsBraceStart: number; propsBraceEnd: number }
+    ) =>
+      outer.propsBraceStart < inner.propsBraceStart &&
+      inner.propsBraceEnd < outer.propsBraceEnd;
+
+    const topLevel = calls.filter(
+      (c) => !calls.some((o) => o !== c && isStrictlyInside(c, o))
+    );
+
     const edits: vscode.TextEdit[] = [];
-    for (const call of calls) {
-      if (
-        call.propsBraceStart === undefined ||
-        call.propsBraceEnd === undefined
-      ) {
-        continue;
-      }
-      const bodyStart = call.propsBraceStart + 1;
-      const bodyEnd = call.propsBraceEnd;
-      const body = text.slice(bodyStart, bodyEnd);
-      const sorted = sortPropsBody(body, order);
-      if (!sorted) {
-        continue;
-      }
+    for (const top of topLevel) {
+      const start = top.propsBraceStart + 1;
+      const end = top.propsBraceEnd;
+      const sorted = sortBodyRecursive(text, start, end, calls, order);
+      if (sorted === undefined) continue;
       edits.push(
         vscode.TextEdit.replace(
           new vscode.Range(
-            document.positionAt(bodyStart),
-            document.positionAt(bodyEnd)
+            document.positionAt(start),
+            document.positionAt(end)
           ),
           sorted
         )
