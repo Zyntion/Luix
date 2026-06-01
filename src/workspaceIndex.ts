@@ -449,8 +449,19 @@ export class WorkspaceIndex implements vscode.Disposable {
     }
     const out = new Set<string>();
     for (const entry of this.cache.values()) {
-      for (const name of entry.components.keys()) {
-        out.add(name);
+      for (const [name, info] of entry.components) {
+        // `entry.components` indexes *every* function definition the
+        // parser finds — including ordinary helpers like
+        // `ProductRegistry.GetGamepassProduct`. Only the ones that
+        // look like UI components (return an element call, or carry
+        // an explicit `@extends ClassName` annotation) should surface
+        // as workspace-component completion targets. Without this
+        // filter, typing `Pro` in a server script would surface every
+        // workspace function whose name starts with `Pro` as a
+        // "Luix component".
+        if (looksLikeComponent(info)) {
+          out.add(name);
+        }
       }
     }
     this._componentNamesCache = out;

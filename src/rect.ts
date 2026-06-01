@@ -1289,10 +1289,14 @@ function renderRectEditorHtml(): string {
     if (!/^[0-9.:,]+$/.test(ev.data)) ev.preventDefault();
   });
 
-  function wireField(el, get, set) {
+  // minFn lets X/Y go negative (so when the user pans / drags past
+  // the left or top edge — including via scroll-zoom-out — the rect
+  // can extend into the negative side of ImageRectOffset, which is a
+  // legal Roblox value). W/H stay non-negative.
+  function wireField(el, get, set, minFn = () => 0) {
     el.addEventListener("input", () => {
       const n = Number(el.value);
-      if (!Number.isFinite(n) || n < 0) return;
+      if (!Number.isFinite(n) || n < minFn()) return;
       set(n);
       paintRect();
     });
@@ -1301,7 +1305,7 @@ function renderRectEditorHtml(): string {
       ev.preventDefault();
       const step = ev.shiftKey ? 10 : 1;
       const dir = ev.deltaY > 0 ? -1 : 1;
-      set(Math.max(0, get() + dir * step));
+      set(Math.max(minFn(), get() + dir * step));
       el.value = String(get());
       paintRect();
     }, { passive: false });
@@ -1310,21 +1314,29 @@ function renderRectEditorHtml(): string {
       ev.preventDefault();
       const step = ev.shiftKey ? 10 : 1;
       const dir = ev.key === "ArrowUp" ? 1 : -1;
-      set(Math.max(0, get() + dir * step));
+      set(Math.max(minFn(), get() + dir * step));
       el.value = String(get());
       paintRect();
     });
   }
 
+  // X/Y: symmetric range [-maxRect(), maxRect()]. Negative values
+  // correspond to negative ImageRectOffset, which Roblox treats as
+  // panning the visible rect to the right / down relative to the
+  // source texture origin.
+  const negMaxRect = () => -maxRect();
   wireField(inX,
     () => Math.round(rectX),
-    (v) => { rectX = clamp(v, 0, maxRect()); });
+    (v) => { rectX = clamp(v, -maxRect(), maxRect()); },
+    negMaxRect);
   wireField(inY,
     () => Math.round(rectY),
-    (v) => { rectY = clamp(v, 0, maxRect()); });
+    (v) => { rectY = clamp(v, -maxRect(), maxRect()); },
+    negMaxRect);
   // W/H allowed to exceed source dimensions — Roblox accepts oversize
   // ImageRectSize and just stretches the texture to fit. Cap at maxRect
-  // (4× source or 65535) to keep numeric inputs sensible.
+  // (4× source or 65535) to keep numeric inputs sensible. Min stays 0
+  // (the field rejects negatives, the resize handlers clamp to 1).
   wireField(inW,
     () => Math.round(rectW),
     (v) => { rectW = clamp(v, 0, maxRect()); });
@@ -1424,11 +1436,14 @@ function renderRectEditorHtml(): string {
     const dx = (dxPx / (rect.width * viewScale)) * srcW;
     const dy = (dyPx / (rect.height * viewScale)) * srcH;
     // Don't clamp to image bounds — let the user drag past for oversize
-    // rects. Clamp only at the max sensible bound (4× source).
+    // rects. Clamp only at the max sensible bound (4× source). X/Y
+    // accept negatives so dragging past the left / top edge (or
+    // scroll-zooming out and panning into the negative side) yields a
+    // negative ImageRectOffset, which Roblox accepts.
     const M = maxRect();
     if (drag.kind === "move") {
-      rectX = clamp(Math.round(drag.startX + dx), 0, M);
-      rectY = clamp(Math.round(drag.startY + dy), 0, M);
+      rectX = clamp(Math.round(drag.startX + dx), -M, M);
+      rectY = clamp(Math.round(drag.startY + dy), -M, M);
     } else {
       const h = drag.handle;
       let nx = drag.startX, ny = drag.startY, nw = drag.startW, nh = drag.startH;
@@ -1437,8 +1452,8 @@ function renderRectEditorHtml(): string {
       if (h.includes("n")) { ny = drag.startY + dy; nh = drag.startH - dy; }
       if (h.includes("s")) { nh = drag.startH + dy; }
       const MIN = 1;
-      nx = clamp(Math.round(nx), 0, M);
-      ny = clamp(Math.round(ny), 0, M);
+      nx = clamp(Math.round(nx), -M, M);
+      ny = clamp(Math.round(ny), -M, M);
       nw = clamp(Math.round(nw), MIN, M);
       nh = clamp(Math.round(nh), MIN, M);
       rectX = nx; rectY = ny; rectW = nw; rectH = nh;

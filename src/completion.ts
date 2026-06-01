@@ -11,6 +11,7 @@ import {
 import {
   AliasPartition,
   buildCodeMask,
+  findAllCreateElementCalls,
   findEnclosingFactoryStringArg,
   findEnclosingPropsCall,
   pushUnique,
@@ -24,6 +25,8 @@ import {
 } from "./frameworks";
 import { getConfig } from "./configCompat";
 import { WorkspaceIndex } from "./workspaceIndex";
+import { buildImportPath } from "./codeActions";
+import { getAutoImportConfig } from "./config";
 
 // ============================================================================
 // Main completion provider — props inside e(...) tables + [React.Event.X]
@@ -612,10 +615,10 @@ export class FactoryComponentCompletionProvider
 {
   constructor(private readonly workspaceIndex: WorkspaceIndex) {}
 
-  provideCompletionItems(
+  async provideCompletionItems(
     document: vscode.TextDocument,
     position: vscode.Position
-  ): vscode.ProviderResult<vscode.CompletionItem[]> {
+  ): Promise<vscode.CompletionItem[] | undefined> {
     const text = document.getText();
     const offset = document.offsetAt(position);
 
@@ -650,13 +653,30 @@ export class FactoryComponentCompletionProvider
       if (before === "." || before === ":") return undefined;
     }
 
+    // Suppress when the cursor is inside a Luau `type X = …` /
+    // `export type X = …` declaration. Both the identifier slot
+    // (`export type Gamepass|`) and the RHS (`type X = MyComp|`)
+    // are TYPE positions, not value positions — surfacing workspace
+    // components there is meaningless and pollutes the dropdown when
+    // typing type-alias names that share a prefix with components.
+    if (isInTypeDeclaration(document, position)) return undefined;
+
+    // File-context gate: workspace-component suggestions only fire in
+    // files that show signs of UI code (any factory call, framework
+    // import, or detected component). Without this, typing a single
+    // letter in a server script or pure-logic module would fuzzy-match
+    // every workspace component starting with that letter — noisy and
+    // unhelpful. The check is cheap because both `scanDocument` and
+    // `findAllCreateElementCalls` are document-cached.
+    const aliases = getAliasPartition();
+    if (!looksLikeUIFile(text, aliases)) return undefined;
+
     // Suppress when the cursor is at a prop-*key* slot inside a props
     // table (`e("Frame", { Name = ..., eTextButt|` ). The user is
     // naming a prop, not invoking a component. Exception: Vide allows
     // inline children as table entries (`create "Frame" { eTextButt|`
     // is a valid child expression), so the suppression is gated to
     // frameworks whose `childrenLayout` isn't `"inline"`.
-    const aliases = getAliasPartition();
     const enclosing = findEnclosingPropsCall(
       text,
       offset,
@@ -701,6 +721,25 @@ export class FactoryComponentCompletionProvider
       document.positionAt(ctx.replaceEnd)
     );
 
+    // ---- Auto-import setup -------------------------------------------
+    //
+    // When the user accepts a component that lives in another file
+    // and isn't `require`d in the current one, also insert the require
+    // line at the top — otherwise the inserted call would compile to a
+    // missing-global. Computed *once* for all matches (the
+    // import-insertion position + the set of already-required names
+    // don't change per item) so this stays cheap on big workspaces.
+    //
+    // Same-file components are excluded: typing the name of a function
+    // declared above in the same file doesn't need an import.
+    const importConfig = getAutoImportConfig();
+    const existingRequires = collectExistingRequires(text);
+    const sameFileComponents = new Set(
+      scanDocument(text, aliases).keys()
+    );
+    const insertionLine = findRequireInsertionLine(text);
+    const insertionPosition = new vscode.Position(insertionLine, 0);
+
     const out: vscode.CompletionItem[] = [];
     for (let idx = 0; idx < matches.length; idx++) {
       const name = matches[idx];
@@ -715,10 +754,72 @@ export class FactoryComponentCompletionProvider
       item.filterText = name;
       item.range = range;
       item.insertText = new vscode.SnippetString(`${name}${ctx.trailing}`);
+
+      if (
+        !existingRequires.has(name) &&
+        !sameFileComponents.has(name)
+      ) {
+        const found = await this.workspaceIndex.findComponentFile(
+          name,
+          document.uri.toString()
+        );
+        if (found) {
+          const importPath = buildImportPath(
+            document.uri,
+            found.uri,
+            importConfig
+          );
+          if (importPath) {
+            const importLine = `local ${name} = require(${importPath})\n`;
+            item.additionalTextEdits = [
+              vscode.TextEdit.insert(insertionPosition, importLine),
+            ];
+            item.detail = `Luix component (${ctx.shapeLabel}) — auto-imports ${importPath}`;
+          }
+        }
+      }
       out.push(item);
     }
     return out;
   }
+}
+
+/**
+ * Collect every locally-bound require'd name from the current file,
+ * so the auto-import path doesn't insert a duplicate `local Card =
+ * require(...)` when one already exists.
+ *
+ * Matches `local Name = require(...)` — the canonical Luau import
+ * shape Luix already scaffolds. Doesn't try to parse multi-line
+ * destructured requires; those are rare and a duplicate require for
+ * such cases is at worst harmless code duplication, not a crash.
+ */
+function collectExistingRequires(text: string): Set<string> {
+  const out = new Set<string>();
+  const re = /^\s*local\s+([A-Za-z_]\w*)\s*=\s*require\b/gm;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    out.add(m[1]);
+  }
+  return out;
+}
+
+/**
+ * Find the line index to insert a new `local X = require(...)` on —
+ * mirrors `findImportInsertionLine` in `src/codeActions.ts` (kept as
+ * a private copy so the completion path doesn't have to reach across
+ * module boundaries for this one helper). Returns the line *after*
+ * the last existing require, or — if there are no requires — line 0.
+ */
+function findRequireInsertionLine(text: string): number {
+  const lines = text.split("\n");
+  let lastRequireLine = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (/^\s*local\s+[A-Za-z_]\w*\s*=\s*require\b/.test(lines[i])) {
+      lastRequireLine = i;
+    }
+  }
+  return lastRequireLine !== -1 ? lastRequireLine + 1 : 0;
 }
 
 /**
@@ -1251,4 +1352,67 @@ export function isInsideComputedKey(
     else if (c === "]") depth--;
   }
   return depth > 0;
+}
+
+/**
+ * Quick heuristic to decide whether a document is plausibly UI code,
+ * used to gate Luix's workspace-component completions. A file is
+ * treated as a UI file when *either* of these signals is present:
+ *
+ *   1. At least one indexed factory call — `e(...)`, `New "..."`,
+ *      `create "..."`, `Roact.createElement(...)`. This is the
+ *      precise signal: if the file actually builds UI, it has at
+ *      least one of these.
+ *   2. A `require()` that names one of the supported UI frameworks
+ *      (react, roact, fusion, vide — case-insensitive). Catches
+ *      brand-new files that have imported a framework but haven't
+ *      typed any calls yet.
+ *
+ * We deliberately *don't* check `scanDocument(...).size > 0` here,
+ * even though it sounds related — the parser indexes every function
+ * definition in the file (not just ones that look like components),
+ * so any file with any function would otherwise pass this gate. The
+ * factory-call check is strict-enough: a component function without
+ * a factory call inside is a contradiction in terms.
+ *
+ * Both `findAllCreateElementCalls` is document-cached so this stays
+ * cheap on repeated calls per keystroke.
+ */
+const UI_REQUIRE_RE = /require\s*\([^)\n]*(react|roact|fusion|vide)/i;
+function looksLikeUIFile(
+  text: string,
+  aliases: AliasPartition | string[]
+): boolean {
+  if (findAllCreateElementCalls(text, aliases).length > 0) return true;
+  if (UI_REQUIRE_RE.test(text)) return true;
+  return false;
+}
+
+/**
+ * True when the current line is a Luau `type X = …` /
+ * `export type X = …` declaration. Both the identifier slot
+ * (cursor on the X) and the RHS (cursor after the `=`) are TYPE
+ * positions, not value positions — Luix's workspace-component
+ * suggestions are meaningless there and would otherwise pollute the
+ * dropdown with components that share a prefix with the type name
+ * the user is typing (the common case: `type Gamepass|` surfacing
+ * `GamepassCard`, `GamepassHero`, … because every component is
+ * detected as a potential direct-call target).
+ *
+ * Lookbehind is line-scoped — multi-line type aliases (a record
+ * type wrapped onto several lines) aren't detected, but the only
+ * way to land workspace-component suggestions inside one is to
+ * type a bare identifier mid-record, which doesn't match any
+ * component name in practice.
+ */
+export function isInTypeDeclaration(
+  document: vscode.TextDocument,
+  position: vscode.Position
+): boolean {
+  const before = document
+    .lineAt(position.line)
+    .text.slice(0, position.character);
+  // `(local )?(export )?type IDENT` — the `IDENT` is the alias name;
+  // anything after the alias's `=` is still inside the declaration.
+  return /\b(?:export\s+|local\s+)?type\s+[A-Za-z_]\w*/.test(before);
 }

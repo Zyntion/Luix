@@ -4,6 +4,150 @@ All notable changes to **Luix** will be documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.4.5]
+
+### `UDim2.fromScale` ↔ `UDim2.fromOffset` conversion that resolves through the parent chain
+
+The existing `UDim2` quick-fix can only flip forms when the value is
+lossless — `UDim2.new(0.5, 0, 0.3, 0)` ↔ `UDim2.fromScale(0.5, 0.3)`,
+etc. It can't help when you want to materialise
+`UDim2.fromScale(1, 0.15)` as concrete pixels because that requires
+knowing the _parent's_ size.
+
+New refactor action: place the cursor on any
+`UDim2.fromScale(…)` / `UDim2.fromOffset(…)` literal that's the value
+of an element's `Size =` prop, hit Ctrl+. (or click the lightbulb),
+and pick "**Convert to UDim2.fromOffset(…)**" (or **fromScale**). Luix
+walks up the source-order parent element chain, multiplies through
+each ancestor's scale until it hits a concrete pixel `Size`, and
+emits the resolved value.
+
+```lua
+e("Frame", { Size = UDim2.fromOffset(800, 600) }, {
+  e("Frame", { Size = UDim2.fromScale(0.5, 0.5) }, {
+    e("Frame", { Size = UDim2.fromScale(1, 0.15) }), -- cursor here
+  }),
+})
+```
+
+→ Convert to `UDim2.fromOffset(400, 45)`. The action's title shows
+the computed value so you can confirm before accepting.
+
+Recognises **reactive `:map(...)` Sizes** when walking the parent
+chain — `Size = popupScale:map(function(s) return UDim2.fromOffset(460
+
+- s, 360 _ s) end)`is treated as a 460×360 anchor, not as
+"non-literal, give up", because the coefficient comes straight out of
+the inner`UDim2.fromOffset`call. Accepts the three strict
+shapes for each axis:`<NUM>`, `<NUM> _ <IDENT>`, and `<IDENT> _
+  <NUM>`(so`460 _ s`and`s _ 460` both work). Anything more
+elaborate (`460 + bonus`, `clamp(s, 0, 1) _ 460`) skips that
+  ancestor rather than guessing — same "no fallback" principle as
+  below.
+
+**No invented numbers.** When the parent chain can't be resolved
+(no parent in source, every ancestor uses `fromScale` with no
+`fromOffset` / `:map(fromOffset(...))` anchor, a mixed-axis
+`UDim2.new(0.5, 10, …)` somewhere in the chain, or a non-literal
+`Size = props.size`), the action stays _hidden_ rather than emitting
+a plausible-looking-but-wrong fallback value. A missing lightbulb is
+better than silently shifting your layout.
+
+### "Calculate Size from children" — the second UDim2 action
+
+Companion action that fires on a parent element whose `Size` is
+`UDim2.fromScale(…)` (or `fromOffset(…)`) and computes the implied
+pixel size from its children. Handles:
+
+- **Children with literal `UDim2.fromOffset(W, H)` Sizes** — pooled
+  according to the layout rule (see below).
+- **`UIListLayout`** — `FillDirection` (Vertical / Horizontal) and
+  the `Padding = UDim.new(0, N)` gap. Children are summed along the
+  fill axis, max-pooled across.
+- **`UIPadding`** — `Padding{Top,Bottom,Left,Right} = UDim.new(0,
+N)` margins added to the pooled total.
+- **Layout decorators** (`UICorner`, `UIStroke`, `UIGradient`,
+  `UIFlexItem`, `UIScale`, the `UI*Constraint` family) are
+  recognised and skipped — they don't take up content space.
+
+Without a `UIListLayout`, falls back to the bounding-box rule
+(`max(child.size)` on both axes), suitable for free-positioned
+children. The action stays hidden when any contentful child has a
+Size we can't reduce to pixels (mixed scale, a variable, a `:map(...)`
+binding without a clean coefficient) — same honest-or-quiet principle
+as the chain-walking action.
+
+### Component completions now auto-import the require
+
+Accepting a workspace-component suggestion (`DailyQuestCard`,
+`StylizedButton`, …) from Luix's completion dropdown used to insert
+just the identifier, leaving the file broken until the user manually
+added `local DailyQuestCard = require(…)` at the top. The completion
+item now carries an `additionalTextEdits` entry that inserts the
+require line — at the same position the existing
+`luix.autoImport` quick-fix would — whenever:
+
+- The component lives in a different file than the current one
+  (same-file definitions need no import).
+- A `local <Name> = require(…)` for it isn't already present.
+
+The import path respects `luix.autoImport.style` (relative /
+alias) and the `luix.autoImport.aliases` mapping, identical to the
+existing diagnostic-driven quick-fix. The item's detail line shows
+the resolved path so you can see what's about to be inserted before
+accepting.
+
+### Workspace components only surface in files that look like UI code
+
+Typing a single letter in a server script, a pure-logic module, or
+anywhere else with no UI in sight used to fuzzy-match every workspace
+function starting with that letter (`Pro` → `PopularGamepasses`,
+`ProductRegistry.GetGamepassProduct`, …) as if they were Luix
+components. Two compounding bugs:
+
+- **`looksLikeUIFile` was too permissive** — the "file has at least
+  one function" check fired on any file, since the parser indexes
+  every function definition (not just component-shaped ones). A
+  server-side `ProductRegistry` module with utility functions counts
+  as "has functions" → falsely flagged as UI. Now relies on the
+  precise signals only: an actual factory call (`e(...)`,
+  `New "..."`, `create "..."`, `Roact.createElement(...)`) or a
+  `require()` of a known UI framework. Files without either —
+  server scripts, DataStore utilities, plain libraries — won't
+  surface workspace components.
+- **`knownComponentNames` didn't filter by `looksLikeComponent`** —
+  the workspace index stored every function definition under its
+  last-segment name, and the completion provider treated all of
+  them as components. Now filtered to functions that either return
+  an element call (`detectedBase` set) or carry an explicit
+  `@extends ClassName` annotation, matching the rule the sidebar
+  already uses.
+
+### Suppress workspace components inside Luau `type X = …` declarations
+
+Typing `export type Gamepass|` to write a type alias used to dump
+every workspace component starting with `Gamepass` into the dropdown
+(`GamepassCard`, `GamepassHero`, `GamepassInfoOverlay`, …) because
+the direct-call detector treated a bare identifier with no preceding
+keyword as a value-position function call. Both the type-name slot
+(`export type X|`) and the RHS (`type X = MyComp|`) are now
+detected as type-position and the workspace-component suggestions
+are suppressed. Covers `type`, `export type`, and the (uncommon)
+`local type` prefixes.
+
+### Rect editor — X / Y now accept negative values
+
+Roblox treats negative `ImageRectOffset` as panning the visible rect
+to the right / down relative to the source texture origin — a
+legitimate use case, especially when scroll-zooming out (below 100%)
+to position a rect that extends past the top-left of the source. The
+editor used to hard-clamp X and Y to `[0, maxRect()]`, so dragging
+or arrow-stepping past the left / top edge silently snapped back to
+zero. Both axes now use the symmetric range `[-maxRect(), maxRect()]`
+across all four input paths: numeric field, wheel step, arrow step,
+and drag + resize handles. W and H stay non-negative (Roblox doesn't
+accept negative `ImageRectSize`).
+
 ## [1.4.4]
 
 ### Workspace-wide component rename (`F2`)
@@ -50,10 +194,10 @@ matter on big files and large workspaces:
   unbounded walk used to scan the full document on every keystroke for
   every provider that calls it. Also cached the compiled `RegExp`
   objects per alias-key (previously only the alias alternation
-  *string* was cached; the `RegExp` was allocated fresh each call).
+  _string_ was cached; the `RegExp` was allocated fresh each call).
 - **Faster `extractPropEntries` for diagnostics / hover previews /
   rect / gradient.** Added `extractPropEntriesFromDocument(text,
-  start, end)` that reuses the document-level mask cache — the
+start, end)` that reuses the document-level mask cache — the
   per-substring path always missed the cache, causing ~400+ redundant
   mask builds per diagnostic recompute on a busy file.
 - **Replaced the per-match brace-walk in deprecation diagnostics
@@ -80,20 +224,20 @@ matter on big files and large workspaces:
   The previous implementation emitted one TextEdit per call's props
   body, and nested calls (the textbook UI shape — `Frame > TextLabel
   > UIPadding`) produced overlapping ranges that VS Code rejects,
-  aborting the whole save formatter. Now emits one edit per
-  outer-most call with the nested sorts spliced in via
-  `sortBodyRecursive`.
+aborting the whole save formatter. Now emits one edit per
+outer-most call with the nested sorts spliced in via
+`sortBodyRecursive`.
 - **Fixed API-dump cache invalidation.** Enabling
   `luix.useRobloxApiDump` and merging new props for e.g. `Frame` used
   to leave `ScrollingFrame` / `TextLabel` / etc. with their stale
   pre-merge flattened prop lists, so descendants never saw the new
-  props until reload. The merge now writes to the *source* hierarchy
+  props until reload. The merge now writes to the _source_ hierarchy
   and rebuilds the derived caches.
 - **Cleared `WorkspaceIndex._persistTimer` in `dispose()`.** A
   timer armed within 5 s of window close held a closure on the cache
   and wrote to disk after the extension shut down. One-line fix.
 - **Plugged `imageGutter` double-dispose.** Decoration types were
-  being tracked in both the disposables list *and*
+  being tracked in both the disposables list _and_
   `typesByAsset`; `clearAllDecorations` disposed via the map, then
   `dispose()` later double-disposed via the list. Now tracked only in
   the map.
@@ -104,7 +248,7 @@ matter on big files and large workspaces:
   the next keystroke.
 - **`Luix` output channel** — wired into the asset-thumbnail fetch /
   CDN failure paths so background failures stop being silent. Open
-  via *Output → Luix*.
+  via _Output → Luix_.
 - **Bug fix: workspace-component completions inside a props table.**
   Typing `e("Frame", { Name = "Test", eTextButt|` used to surface
   `eTextButton` as a component suggestion even though the cursor was
@@ -124,15 +268,14 @@ matter on big files and large workspaces:
   prefix — typing a single `r` inside `Text = "Resets in 00:12:34 r"`
   surfaced `reactEvent`, `rfc`, and `useRef`; typing `eFra` at a
   prop-key slot inside a props table offered to expand into a full
-  `e("Frame", { ... })` call. *Every* Luix snippet —
+  `e("Frame", { ... })` call. _Every_ Luix snippet —
   element constructors (`eFrame`, `nFrame`, `cFrame`, `eTextLabel`,
   …), hooks (`useState`, `useEffect`, `useRef`, `useMemo`,
   `useCallback`), `rfc`, `reactEvent`, `cfangles`, `cfanglesrad` —
   is now served by `ElementSnippetCompletionProvider` and gated:
-
   - **Code-mask check** suppresses every snippet inside string
     literals.
-  - **Prop-key-position check** suppresses *element* snippets at key
+  - **Prop-key-position check** suppresses _element_ snippets at key
     slots, except when the parent framework allows inline child
     expressions (Vide). Hooks / scaffold / `reactEvent` /
     `cfangles*` skip this gate because they don't collide with
@@ -146,6 +289,7 @@ matter on big files and large workspaces:
 
   `snippets/luix.code-snippets` is now empty (kept as a placeholder
   for the manifest's `contributes.snippets` registration).
+
 - **Bug fix: completions inside `[…]` computed-key brackets.**
   Typing `[Reac|` (to write `[React.Event.Activated]` by hand)
   surfaced workspace components like `ReactCharm` /
@@ -156,7 +300,6 @@ matter on big files and large workspaces:
   `Archivable` / `Name` / `AutoLocalize` / etc. as if it were the
   start of a prop name in the outer table. Added a new
   `isInsideComputedKey` helper and gated three providers on it:
-
   - `ReactLuauPropsCompletionProvider` — bails after the
     `[React.Event.X|]` / `[React.Change.X|]` fast-path (so those
     still fire correctly) so the general prop-name path doesn't
@@ -164,13 +307,12 @@ matter on big files and large workspaces:
   - `FactoryComponentCompletionProvider` — no workspace components
     inside `[…]`.
   - `ElementSnippetCompletionProvider` — no `eFrame` / `reactEvent`
-    / etc. inside `[…]` (the `reactEvent` snippet *expands* to a
+    / etc. inside `[…]` (the `reactEvent` snippet _expands_ to a
     `[React.Event.…] = function() … end` entry, so triggering it
     inside an existing `[…]` would have produced nested brackets).
 
   Also added two **dynamic computed-key starter snippets** that fire
-  *only* inside `[…]` and *only* when React or Roact is enabled:
-
+  _only_ inside `[…]` and _only_ when React or Roact is enabled:
   - `React.Event` — expands to
     `React.Event.${1|<every event on the resolved class>|}`. The
     choice list is built from `flattenClassEvents` on the element
@@ -232,7 +374,7 @@ positions where a trailing comma would be a Lua syntax error.
 
 luau-lsp sees workspace components as functions with a
 `(props) -> ReactNode` signature, so accepting one in the suggestion
-list expanded it to a *call* — `DailyQuestCard(props)` — which is
+list expanded it to a _call_ — `DailyQuestCard(props)` — which is
 never the form any of the supported frameworks actually want.
 
 Luix now contributes a parallel completion that materialises the

@@ -2,7 +2,7 @@
   "name": "luix-roblox",
   "displayName": "Luix Roblox",
   "description": "All-in-one Roblox UI authoring helper for React-Luau, Fusion, Vide, and Roact — prop completions, hover docs, inlay hints, color preview, deprecation diagnostics, and more.",
-  "version": "1.4.4",
+  "version": "1.4.5",
   "publisher": "ericplane",
   "icon": "assets/icon.png",
   "author": {
@@ -465,7 +465,7 @@
               },
               "robloxPath": {
                 "type": "string",
-                "description": "Roblox-style prefix to substitute, e.g. `script.Components` or `ReplicatedStorage.Packages`."
+                "description": "Roblox-style prefix to substitute. Safe targets: `ReplicatedStorage.*`, `ServerStorage.*`, `ServerScriptService.*`, or relative `script.Parent.*`. AVOID `game.StarterPlayer.StarterPlayerScripts.*` / `StarterCharacterScripts.*` / `StarterGui.*` — those paths exist at edit time but not at runtime (Roblox copies StarterPlayer*Scripts into `Players.LocalPlayer.PlayerScripts` / the character; StarterGui into `PlayerGui`). Use the runtime path (e.g. `Players.LocalPlayer.PlayerScripts.UI`) or stick with the default `relative` style, which sidesteps the issue entirely."
               }
             },
             "required": [
@@ -473,7 +473,7 @@
               "robloxPath"
             ]
           },
-          "markdownDescription": "For `alias` style: map workspace-relative filesystem prefixes to Roblox-style require prefixes. The first matching alias wins."
+          "markdownDescription": "For `alias` style: map workspace-relative filesystem prefixes to Roblox-style require prefixes. The first matching alias wins.\n\n**Runtime-copy caveat.** Roblox copies `StarterPlayer.StarterPlayerScripts` / `StarterCharacterScripts` / `StarterGui` into `Players.LocalPlayer.PlayerScripts` / the character / `PlayerGui` when the player joins. An alias whose `robloxPath` includes `StarterPlayer.*Scripts` or `StarterGui` will work in Studio Edit but fail in actual gameplay. For UI code that lives in `StarterPlayerScripts`, either:\n\n- leave aliases empty and let `relative` mode emit `script.Parent.…` chains (relative offsets are preserved across the copy), OR\n- target the runtime path: `Players.LocalPlayer.PlayerScripts.UI`.\n\nServices that don't get copied (`ReplicatedStorage`, `ServerStorage`, `ServerScriptService`) are safe absolute targets."
         },
         "luix.richText.enabled": {
           "type": "boolean",

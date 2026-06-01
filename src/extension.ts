@@ -46,6 +46,10 @@ import { getOutputChannelDisposable } from "./output";
 import { ComponentRenameProvider } from "./rename";
 import { ElementSnippetCompletionProvider } from "./elementSnippets";
 import {
+  UDim2FromChildrenCodeActionProvider,
+  UDim2ResolveCodeActionProvider,
+} from "./udim2Convert";
+import {
   DEFAULT_ALIASES,
   PROP_TYPES,
   TYPE_SNIPPETS,
@@ -264,7 +268,8 @@ export function activate(context: vscode.ExtensionContext) {
       }
     )
   );
-  // Convert UDim2 between new / fromOffset / fromScale.
+  // Convert UDim2 between new / fromOffset / fromScale (lossless,
+  // purely syntactic — only fires when scales OR offsets are zero).
   context.subscriptions.push(
     vscode.languages.registerCodeActionsProvider(
       selector,
@@ -272,6 +277,32 @@ export function activate(context: vscode.ExtensionContext) {
       {
         providedCodeActionKinds:
           UDim2ConvertCodeActionProvider.providedCodeActionKinds,
+      }
+    )
+  );
+  // Convert fromScale ↔ fromOffset by deducing the parent element's
+  // pixel size from the source-order parent chain. Fires when the
+  // chain resolves to a concrete pixel value; otherwise stays hidden.
+  context.subscriptions.push(
+    vscode.languages.registerCodeActionsProvider(
+      selector,
+      new UDim2ResolveCodeActionProvider(),
+      {
+        providedCodeActionKinds:
+          UDim2ResolveCodeActionProvider.providedCodeActionKinds,
+      }
+    )
+  );
+  // "Calculate Size from children" — compute the parent's pixel size
+  // from its children's literal `UDim2.fromOffset` Sizes, plus any
+  // `UIListLayout` Padding + FillDirection and `UIPadding` margins.
+  context.subscriptions.push(
+    vscode.languages.registerCodeActionsProvider(
+      selector,
+      new UDim2FromChildrenCodeActionProvider(),
+      {
+        providedCodeActionKinds:
+          UDim2FromChildrenCodeActionProvider.providedCodeActionKinds,
       }
     )
   );
