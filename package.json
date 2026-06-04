@@ -2,7 +2,7 @@
   "name": "luix-roblox",
   "displayName": "Luix Roblox",
   "description": "All-in-one Roblox UI authoring helper for React-Luau, Fusion, Vide, and Roact — prop completions, hover docs, inlay hints, color preview, deprecation diagnostics, and more.",
-  "version": "1.4.5",
+  "version": "1.5.0",
   "publisher": "ericplane",
   "icon": "assets/icon.png",
   "author": {
@@ -79,16 +79,6 @@
         ]
       }
     ],
-    "snippets": [
-      {
-        "language": "lua",
-        "path": "./snippets/luix.code-snippets"
-      },
-      {
-        "language": "luau",
-        "path": "./snippets/luix.code-snippets"
-      }
-    ],
     "viewsContainers": {
       "activitybar": [
         {
@@ -124,6 +114,11 @@
     ],
     "commands": [
       {
+        "command": "luix.pickActiveFramework",
+        "title": "Luix: Set active framework…",
+        "category": "Luix"
+      },
+      {
         "command": "luix.wally.regenerateTypes",
         "title": "Luix: Regenerate Wally types",
         "category": "Luix"
@@ -141,6 +136,11 @@
       {
         "command": "luix.newComponent.react",
         "title": "Luix: New React component file",
+        "category": "Luix"
+      },
+      {
+        "command": "luix.newComponent.roact",
+        "title": "Luix: New Roact component file",
         "category": "Luix"
       },
       {
@@ -264,7 +264,26 @@
             "fusion",
             "vide"
           ],
-          "markdownDescription": "Which Roblox UI frameworks Luix recognizes. Disable the ones you don't use to keep completions tight. Each framework has its own call syntax — Luix picks up `e(...)` / `Roact.createElement(...)` (parens form) and `New \"X\" {...}` / `create \"X\" {...}` (curried form) accordingly."
+          "markdownDescription": "Which Roblox UI frameworks Luix recognizes. Disable the ones you don't use to keep completions tight. Each framework has its own call syntax — Luix picks up `e(...)` / `Roact.createElement(...)` (parens form) and `New \"X\" {...}` / `create \"X\" {...}` (curried form) accordingly.\n\nNot to be confused with `#luix.activeFramework#`: that's the *single* framework Luix targets for snippets / scaffold suggestions per file (auto-detected by default); this is the *set* of frameworks the parser is willing to recognise at all."
+        },
+        "luix.activeFramework": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "react",
+            "roact",
+            "fusion",
+            "vide"
+          ],
+          "enumDescriptions": [
+            "Detect per file from imports / factory calls. Falls back to a workspace-wide best guess when a file has no signals yet.",
+            "Force React-Luau (`e(...)`) snippets and completions everywhere.",
+            "Force Roact (`Roact.createElement(...)`) snippets and completions everywhere.",
+            "Force Fusion (`New \"...\" { ... }`) snippets and completions everywhere.",
+            "Force Vide (`create \"...\" { ... }` / `Vide.create(...)`) snippets and completions everywhere."
+          ],
+          "default": "auto",
+          "markdownDescription": "Which framework's snippets and completions Luix surfaces. Default `auto` picks per file in this priority order:\n\n1. This setting, if not `auto`.\n2. The file's own `require(...)` imports of `react` / `roact` / `fusion` / `vide`.\n3. The file's first factory call (`e(...)`, `New \"...\"`, `create \"...\"`, …).\n4. A workspace-wide best guess inferred from sampled indexed files.\n5. None — Luix's UI suggestions stay quiet.\n\nThe Luix status-bar item shows the current pick and clicking it flips this setting (workspace-scope when a workspace is open, global otherwise). Distinct from `#luix.frameworks#`, which controls which frameworks Luix's *parser* recognises in the first place."
         },
         "luix.react.aliases": {
           "type": "array",

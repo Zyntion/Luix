@@ -103,6 +103,15 @@ import {
   SortPropsCodeActionProvider,
   SortPropsOnSaveListener,
 } from "./sortProps";
+import {
+  ActiveFrameworkStatusBar,
+  PICK_ACTIVE_FRAMEWORK_COMMAND,
+  pickActiveFrameworkCommand,
+} from "./statusBar";
+import {
+  inferWorkspaceFramework,
+  setWorkspaceFallback,
+} from "./activeFramework";
 
 export function activate(context: vscode.ExtensionContext) {
   const selector: vscode.DocumentSelector = [
@@ -122,6 +131,42 @@ export function activate(context: vscode.ExtensionContext) {
   // setting is off — see `apiDump.ts`).
   maybeAugmentFromApiDump(context);
   context.subscriptions.push(workspaceIndex);
+
+  // Active-framework status bar — the always-visible "Luix: React /
+  // Roact / Fusion / Vide / Auto" indicator. Click flips
+  // `luix.activeFramework`. The picker command is also exposed via
+  // the command palette ("Luix: Set active framework…").
+  const statusBar = new ActiveFrameworkStatusBar();
+  const refreshWorkspaceFallback = async () => {
+    const fw = await inferWorkspaceFramework(workspaceIndex.indexedUris());
+    // The infer call awaits up to 25 openTextDocument round-trips —
+    // can take hundreds of ms. If deactivate fired in the meantime,
+    // touching the disposed status bar throws "Illegal access to
+    // disposed object" in some VS Code versions. The disposed flag
+    // (added in statusBar.ts) makes both writes idempotent on a
+    // dead instance.
+    if (statusBar.isDisposed()) return;
+    setWorkspaceFallback(fw);
+    statusBar.refresh();
+  };
+  context.subscriptions.push(
+    statusBar,
+    vscode.commands.registerCommand(
+      PICK_ACTIVE_FRAMEWORK_COMMAND,
+      pickActiveFrameworkCommand
+    ),
+    // Workspace fallback for the framework detector: take the
+    // most-represented framework across indexed files and expose it
+    // via `setWorkspaceFallback`. Recomputed on every settled index
+    // change, so brand-new files inherit the project's convention
+    // even before they have their own imports / calls.
+    workspaceIndex.onDidChangeIndex(() => {
+      void refreshWorkspaceFallback();
+    })
+  );
+  // Initial inference at activation — non-blocking so the rest of
+  // activate() can finish without waiting on file reads.
+  void refreshWorkspaceFallback();
 
   // Props provider — `.` is needed for `[React.Event.|` and
   // `[React.Change.|`; `{` makes the suggestion list open the moment you
@@ -585,6 +630,10 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand(
       "luix.newComponent.react",
       (uri?: vscode.Uri) => scaffoldComponent("react", uri)
+    ),
+    vscode.commands.registerCommand(
+      "luix.newComponent.roact",
+      (uri?: vscode.Uri) => scaffoldComponent("roact", uri)
     ),
     vscode.commands.registerCommand(
       "luix.newComponent.fusion",

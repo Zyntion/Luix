@@ -21,6 +21,29 @@ const TEMPLATES = {
       ``,
     ].join("\n"),
 
+  roact: (name: string) =>
+    [
+      `local ReplicatedStorage = game:GetService("ReplicatedStorage")`,
+      ``,
+      `local Roact = require(ReplicatedStorage.Packages.Roact)`,
+      ``,
+      // No `local e = Roact.createElement` alias — the matching `rofc`
+      // snippet body in src/elementSnippets.ts calls
+      // `Roact.createElement` directly, so both entry points (this
+      // template + the rofc snippet) emit identical files.
+      `local function ${name}(props)`,
+      `\treturn Roact.createElement("Frame", {`,
+      `\t\tSize = UDim2.fromScale(1, 1),`,
+      `\t\tBackgroundTransparency = 1,`,
+      `\t}, {`,
+      `\t\t-- children`,
+      `\t})`,
+      `end`,
+      ``,
+      `return ${name}`,
+      ``,
+    ].join("\n"),
+
   fusion: (name: string) =>
     [
       `local ReplicatedStorage = game:GetService("ReplicatedStorage")`,
@@ -68,6 +91,7 @@ export type Framework = keyof typeof TEMPLATES;
 
 const PROMPT_TITLES: Record<Framework, string> = {
   react: "New React component",
+  roact: "New Roact component",
   fusion: "New Fusion component",
   vide: "New Vide component",
 };
@@ -180,6 +204,7 @@ export async function pickFrameworkAndScaffold(
   type Pick = vscode.QuickPickItem & { framework: Framework };
   const items: Pick[] = [
     { label: "React component", description: "e(\"Frame\", { … })", framework: "react" },
+    { label: "Roact component", description: "Roact.createElement(\"Frame\", { … })", framework: "roact" },
     { label: "Fusion component", description: "New \"Frame\" { … }", framework: "fusion" },
     { label: "Vide component", description: "create \"Frame\" { … }", framework: "vide" },
   ];

@@ -443,6 +443,25 @@ export class WorkspaceIndex implements vscode.Disposable {
    * setup work per keystroke. If this becomes a hotspot, memoise on
    * `onDidChangeIndex`.
    */
+  /**
+   * Snapshot list of every URI the index has scanned. Used by
+   * activeFramework's workspace-fallback inference to pull a sample
+   * of file texts and tally which framework dominates the project.
+   * Cheap — just `Array.from(this.cache.keys())`.
+   */
+  indexedUris(): vscode.Uri[] {
+    const out: vscode.Uri[] = [];
+    for (const uriString of this.cache.keys()) {
+      try {
+        out.push(vscode.Uri.parse(uriString));
+      } catch {
+        // Skip unparseable URIs — shouldn't happen, the index stores
+        // them via toString() round-trip.
+      }
+    }
+    return out;
+  }
+
   knownComponentNames(): ReadonlySet<string> {
     if (this._componentNamesCache) {
       return this._componentNamesCache;

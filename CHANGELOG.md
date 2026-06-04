@@ -4,6 +4,133 @@ All notable changes to **Luix** will be documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.5.0]
+
+### Active-framework detection + status-bar picker
+
+Every Lua / Luau file now has an active framework, picked per file
+in this priority order:
+
+1. **Explicit override** — the new `luix.activeFramework` setting
+   (default `auto`). Set to `react` / `roact` / `fusion` / `vide` to
+   force everything everywhere.
+2. **In-file `require(…)`** — first match wins, in
+   `roact → vide → fusion → react` order (Roact tested first because
+   its name contains "react").
+3. **In-file factory call** — alias of the first
+   `e(...)` / `New "..."` / `create "..."` etc. → its framework.
+4. **Workspace fallback** — at activation Luix samples up to 25
+   indexed files and uses the most-represented framework as the
+   tie-breaker for brand-new files.
+5. **None** — no UI signal → snippets and completions stay quiet
+   (same gate the existing `looksLikeUIFile` policy used).
+
+A new status-bar item on the right (`$(symbol-namespace) Luix:
+Vide`) shows the current pick with a tooltip explaining where it
+came from ("detected from `require(…)` import", "set by
+`luix.activeFramework`", etc.). Click it to open a quickpick of
+`Auto, React, Roact, Fusion, Vide`; the choice writes
+`luix.activeFramework` to workspace settings. The picker is also
+available via the command palette as
+**`Luix: Set active framework…`**.
+
+### Vide parens form — `Vide.create("Frame", { … })`
+
+Vide accepts both `create "Frame" { … }` and
+`create("Frame", { … })` / `Vide.create("Frame", { … })`. Until
+1.5.0 Luix only recognised the curried shape — the parens form
+silently fell out of every detector, so prop completions, hover
+docs, and call-tree inlay hints all stopped firing inside it.
+
+- New `recognizedCallShapes?: CallShape[]` on `FrameworkSpec`. Vide
+  registers both `"parens"` and `"curried"`, so its aliases now land
+  in both partition buckets.
+- `getAliasPartition()` iterates `recognizedCallShapes` (defaulting
+  to `[callShape]` for backward compatibility), so other frameworks
+  behave exactly as before.
+- `Vide.create` added to Vide's aliases.
+- `findAllCreateElementCallsImpl`'s parens regex now captures the
+  matched alias. When the alias is also in the curried bucket
+  (Vide), the props brace doubles as the inline-children container —
+  `Vide.create("Frame", { Child(...) })` parses with `Child(...)`
+  as a child, not as a stray prop.
+
+Three new tests cover the cases (`findEnclosingPropsCall`,
+`findAllCreateElementCalls` nested-tree, `findEnclosingFactoryStringArg`).
+
+Thank you to [@Zyntion]("https://github.com/Zyntion") for the idea!
+
+### Snippet / scaffold parity across all four frameworks
+
+With per-file gating in place, every framework gets the same
+snippet matrix without polluting the dropdown for the others:
+
+- **Roact in the scaffold quickpick** — Explorer right-click → New
+  component now lists Roact alongside React / Fusion / Vide.
+  Template mirrors React's but uses `Roact.createElement` and drops
+  the `React.ReactNode` return annotation.
+- **Element snippets** — Fusion (`n*`), Vide (`c*`), and Roact (`r*`)
+  now have the same 11-snippet baseline React (`e*`) always had:
+  Frame, ScrollingFrame, TextLabel, TextButton, ImageLabel,
+  ImageButton, UIListLayout, UIGridLayout, UIPadding, UICorner,
+  UIStroke. Bodies use each framework's idiomatic call shape and
+  event syntax (`[OnEvent "Activated"]` for Fusion, plain
+  `Activated = function() … end` for Vide).
+- **Function-component scaffolds** — `rfc` (React), new `rofc`
+  (Roact), new `nfc` (Fusion), new `vfc` (Vide). Each is gated to
+  its framework — typing `rfc` in a Vide file no longer surfaces a
+  React scaffold.
+- **Event-handler shorthand snippets** — `reactEvent` (React),
+  new `roactEvent` (Roact), new `onEvent` (Fusion), new `videEvent`
+  (Vide). Each emits the right syntax for its framework — Fusion
+  gets `[OnEvent "Activated"]`, Vide gets bare `Activated =
+function() … end`, etc.
+- **State-primitive snippets** — new for both Fusion (`value`,
+  `computed`, `spring`, `tween`, `observer`, `forKeys`,
+  `forValues`, `forPairs`) and Vide (`source`, `derive`, `effect`,
+  `cleanup`, `untrack`, `batch`, `show`, `switch`, `indexes`,
+  `values`). Each gated to its framework.
+
+### Computed-key fast-paths for all event-bearing frameworks
+
+The `[React.Event.X|]` / `[React.Change.X|]` autocomplete used to
+be hard-coded to the React prefix. Extended to:
+
+- **Roact** — `[Roact.Event.X|]` / `[Roact.Change.X|]` (identical
+  regex shape, just the `React|Roact` alternation).
+- **Fusion** — `[OnEvent "X|"]` / `[OnChange "X|"]` / `[Out "X|"]`
+  (the quoted-string shape Fusion uses). Property choice lists are
+  pulled from the resolved class the same way the React fast-path
+  does.
+
+The dynamic computed-key _starter_ snippets (`React.Event` /
+`React.Change` choice-list entries shown inside an empty `[|]`)
+now emit the right shape for the active framework:
+`Roact.Event` / `Roact.Change` for Roact files,
+`OnEvent` / `OnChange` / `Out` for Fusion files. Vide files don't
+get any computed-key starters because events are plain prop keys
+there (no `[…]` shape exists).
+
+### Setting
+
+- **`luix.activeFramework`** — `"auto"` (default) /
+  `"react"` / `"roact"` / `"fusion"` / `"vide"`. Documented in the
+  Settings UI with the full precedence ladder.
+
+### Files changed
+
+`src/frameworks.ts` (CallShape, recognizedCallShapes, Vide aliases,
+partition logic), `src/parser.ts` (capturing alias, inline-children
+on parens), `src/activeFramework.ts` (new), `src/statusBar.ts`
+(new), `src/extension.ts` (status bar + picker + workspace
+fallback wiring), `src/completion.ts` (per-framework fast-paths +
+active-framework gating), `src/elementSnippets.ts` (per-framework
+gating, 27 new element snippets, 18 new state snippets, 3 new
+scaffolds, 3 new event shorthands), `src/scaffolds.ts` (Roact
+template + quickpick entry), `src/test/extension.test.ts` (fork's
+3 Vide-parens tests + updated VIDE_PARTITION), `package.json` (new
+setting, new command, version `1.4.5 → 1.5.0`).
+
 ## [1.4.5]
 
 ### `UDim2.fromScale` ↔ `UDim2.fromOffset` conversion that resolves through the parent chain

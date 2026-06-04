@@ -11,7 +11,6 @@ import {
 import {
   AliasPartition,
   buildCodeMask,
-  findAllCreateElementCalls,
   findEnclosingFactoryStringArg,
   findEnclosingPropsCall,
   pushUnique,
@@ -27,6 +26,44 @@ import { getConfig } from "./configCompat";
 import { WorkspaceIndex } from "./workspaceIndex";
 import { buildImportPath } from "./codeActions";
 import { getAutoImportConfig } from "./config";
+import { detectFrameworkForDocument } from "./activeFramework";
+
+// ----------------------------------------------------------------------
+// Computed-key fast-path regexes
+// ----------------------------------------------------------------------
+//
+// Pulled to module scope so the test suite can assert each shape
+// directly. Each one matches "cursor just past the dot / opening
+// quote of a computed-key handler key", with the partial identifier
+// (or empty) in capture group 1.
+//
+//   React  — `[React.Event.X|]`   `[React.Change.X|]`
+//   Roact  — `[Roact.Event.X|]`   `[Roact.Change.X|]`
+//   Fusion — `[OnEvent "X|"]`     `[OnChange "X|"]`   `[Out "X|"]`
+//
+// Vide has no computed-key event syntax (events are plain prop keys
+// via `eventsAsProps`) so there's nothing to fast-path here.
+//
+// React and Roact get separate regexes (not a merged `(?:React|Roact)`
+// alternation) so the active-framework gate downstream can suppress
+// the Roact shape in React files and vice versa — otherwise typing
+// `[Roact.Event.A` in a React-only file would surface Roact suggestions
+// the user can't actually use.
+const COMPUTED_KEY_FAST_PATHS = {
+  reactEvent: /\[\s*React\.Event\.([A-Za-z_]\w*)?$/,
+  reactChange: /\[\s*React\.Change\.([A-Za-z_]\w*)?$/,
+  roactEvent: /\[\s*Roact\.Event\.([A-Za-z_]\w*)?$/,
+  roactChange: /\[\s*Roact\.Change\.([A-Za-z_]\w*)?$/,
+  fusionEvent: /\[\s*OnEvent\s+"([A-Za-z_]\w*)?$/,
+  fusionChange: /\[\s*OnChange\s+"([A-Za-z_]\w*)?$/,
+  fusionOut: /\[\s*Out\s+"([A-Za-z_]\w*)?$/,
+} as const;
+
+// Exposed for tests so the suite can verify each fast-path regex
+// shape without spinning up a real `TextDocument` + workspace index.
+export const _internal = {
+  COMPUTED_KEY_FAST_PATHS,
+};
 
 // ============================================================================
 // Main completion provider — props inside e(...) tables + [React.Event.X]
@@ -59,14 +96,63 @@ export class ReactLuauPropsCompletionProvider
       return undefined;
     }
 
-    // Fast-path: `[React.Event.|` and `[React.Change.|` inside a props
-    // table. The cursor must be in an event/change-key slot for this to
-    // fire — otherwise we fall through to normal prop completion.
+    // Fast-path: per-framework computed-key event / change / out
+    // key completions inside a props table. The cursor must be in
+    // the inside of `[...] = ...` for this to fire.
+    //
+    //   React  — `[React.Event.X|]`   `[React.Change.X|]`
+    //   Roact  — `[Roact.Event.X|]`   `[Roact.Change.X|]`
+    //   Fusion — `[OnEvent "X|"]`     `[OnChange "X|"]`   `[Out "X|"]`
+    //
+    // Vide doesn't have a computed-key event syntax — events are
+    // plain prop keys via `eventsAsProps`, so there's nothing to
+    // fast-path here.
     const lineText = document.lineAt(position.line).text;
     const before = lineText.slice(0, position.character);
-    const eventMatch = /\[\s*React\.Event\.([A-Za-z_]\w*)?$/.exec(before);
-    const changeMatch = /\[\s*React\.Change\.([A-Za-z_]\w*)?$/.exec(before);
-    if (eventMatch || changeMatch) {
+    // Active-framework gate — only run the fast-path regexes whose
+    // shape belongs to the document's current framework. Without this,
+    // typing `[OnEvent "A` in a React file would surface Frame's
+    // event list and encourage Fusion syntax in React code (and vice
+    // versa). 1.5.0 review finding.
+    const active = detectFrameworkForDocument(document).effective;
+    const reactEventMatch =
+      active === "react"
+        ? COMPUTED_KEY_FAST_PATHS.reactEvent.exec(before)
+        : null;
+    const reactChangeMatch =
+      active === "react"
+        ? COMPUTED_KEY_FAST_PATHS.reactChange.exec(before)
+        : null;
+    const roactEventMatch =
+      active === "roact"
+        ? COMPUTED_KEY_FAST_PATHS.roactEvent.exec(before)
+        : null;
+    const roactChangeMatch =
+      active === "roact"
+        ? COMPUTED_KEY_FAST_PATHS.roactChange.exec(before)
+        : null;
+    const fusionEventMatch =
+      active === "fusion"
+        ? COMPUTED_KEY_FAST_PATHS.fusionEvent.exec(before)
+        : null;
+    const fusionChangeMatch =
+      active === "fusion"
+        ? COMPUTED_KEY_FAST_PATHS.fusionChange.exec(before)
+        : null;
+    const fusionOutMatch =
+      active === "fusion"
+        ? COMPUTED_KEY_FAST_PATHS.fusionOut.exec(before)
+        : null;
+    const wantsEvents =
+      reactEventMatch !== null ||
+      roactEventMatch !== null ||
+      fusionEventMatch !== null;
+    const wantsChanges =
+      reactChangeMatch !== null ||
+      roactChangeMatch !== null ||
+      fusionChangeMatch !== null;
+    const wantsOut = fusionOutMatch !== null;
+    if (wantsEvents || wantsChanges || wantsOut) {
       const baseClass = await resolveEffectiveClass(
         detected.className,
         document,
@@ -75,25 +161,26 @@ export class ReactLuauPropsCompletionProvider
       if (!baseClass) {
         return undefined;
       }
-      const names = eventMatch
+      const names = wantsEvents
         ? flattenClassEvents(baseClass)
         : flattenClassProps(baseClass);
       const wordRange = document.getWordRangeAtPosition(
         position,
         /[A-Za-z_][A-Za-z0-9_]*/
       );
+      const detailKind = wantsEvents
+        ? "event"
+        : wantsOut
+          ? "property (Out binding)"
+          : "property (Change listener)";
+      const itemKind = wantsEvents
+        ? vscode.CompletionItemKind.Event
+        : vscode.CompletionItemKind.Property;
       return names.map((name, index) => {
-        const item = new vscode.CompletionItem(
-          name,
-          eventMatch
-            ? vscode.CompletionItemKind.Event
-            : vscode.CompletionItemKind.Property
-        );
+        const item = new vscode.CompletionItem(name, itemKind);
         item.filterText = name;
         item.sortText = String(index).padStart(4, "0");
-        item.detail = eventMatch
-          ? `${baseClass} event`
-          : `${baseClass} property (Change listener)`;
+        item.detail = `${baseClass} ${detailKind}`;
         if (wordRange) {
           item.range = wordRange;
         }
@@ -662,14 +749,14 @@ export class FactoryComponentCompletionProvider
     if (isInTypeDeclaration(document, position)) return undefined;
 
     // File-context gate: workspace-component suggestions only fire in
-    // files that show signs of UI code (any factory call, framework
-    // import, or detected component). Without this, typing a single
-    // letter in a server script or pure-logic module would fuzzy-match
-    // every workspace component starting with that letter — noisy and
-    // unhelpful. The check is cheap because both `scanDocument` and
-    // `findAllCreateElementCalls` are document-cached.
+    // files where Luix has detected an active framework — same
+    // precision as the per-document framework detector used by every
+    // other 1.5+ provider. A server script / pure-logic module with
+    // no UI imports or factory calls returns undefined and the
+    // dropdown stays quiet.
     const aliases = getAliasPartition();
-    if (!looksLikeUIFile(text, aliases)) return undefined;
+    const activeFw = detectFrameworkForDocument(document).effective;
+    if (!activeFw) return undefined;
 
     // Suppress when the cursor is at a prop-*key* slot inside a props
     // table (`e("Frame", { Name = ..., eTextButt|` ). The user is
@@ -1354,39 +1441,14 @@ export function isInsideComputedKey(
   return depth > 0;
 }
 
-/**
- * Quick heuristic to decide whether a document is plausibly UI code,
- * used to gate Luix's workspace-component completions. A file is
- * treated as a UI file when *either* of these signals is present:
- *
- *   1. At least one indexed factory call — `e(...)`, `New "..."`,
- *      `create "..."`, `Roact.createElement(...)`. This is the
- *      precise signal: if the file actually builds UI, it has at
- *      least one of these.
- *   2. A `require()` that names one of the supported UI frameworks
- *      (react, roact, fusion, vide — case-insensitive). Catches
- *      brand-new files that have imported a framework but haven't
- *      typed any calls yet.
- *
- * We deliberately *don't* check `scanDocument(...).size > 0` here,
- * even though it sounds related — the parser indexes every function
- * definition in the file (not just ones that look like components),
- * so any file with any function would otherwise pass this gate. The
- * factory-call check is strict-enough: a component function without
- * a factory call inside is a contradiction in terms.
- *
- * Both `findAllCreateElementCalls` is document-cached so this stays
- * cheap on repeated calls per keystroke.
- */
-const UI_REQUIRE_RE = /require\s*\([^)\n]*(react|roact|fusion|vide)/i;
-function looksLikeUIFile(
-  text: string,
-  aliases: AliasPartition | string[]
-): boolean {
-  if (findAllCreateElementCalls(text, aliases).length > 0) return true;
-  if (UI_REQUIRE_RE.test(text)) return true;
-  return false;
-}
+// Note (1.5.0): the previous `looksLikeUIFile()` helper and its
+// `UI_REQUIRE_RE` regex used to gate the component-completion path.
+// They were removed when the per-file framework detector replaced
+// that gate: callers now use `detectFrameworkForDocument(doc).effective`
+// instead, which is strictly more precise (it also tells us *which*
+// framework, not just "yes this is UI"). Kept this note so a future
+// refactor doesn't reintroduce the helper without realising the
+// detector already covers it.
 
 /**
  * True when the current line is a Luau `type X = …` /

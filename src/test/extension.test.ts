@@ -940,12 +940,30 @@ const FUSION_PARTITION = {
   curried: ["New", "Fusion.New"],
 };
 const VIDE_PARTITION = {
-  parens: [] as string[],
-  curried: ["create", "vide.create"],
+  // 1.5.0: Vide aliases live in *both* buckets via
+  // `recognizedCallShapes: ["parens", "curried"]` so the parser picks
+  // up `create "Frame" { … }`, `create("Frame", { … })`, and the
+  // dotted `Vide.create(...)` form alike.
+  parens: ["create", "vide.create", "Vide.create"],
+  curried: ["create", "vide.create", "Vide.create"],
 };
 const ALL_PARTITION = {
-  parens: ["e", "createElement", "React.createElement", "Roact.createElement"],
-  curried: ["New", "Fusion.New", "create", "vide.create"],
+  parens: [
+    "e",
+    "createElement",
+    "React.createElement",
+    "Roact.createElement",
+    "create",
+    "vide.create",
+    "Vide.create",
+  ],
+  curried: [
+    "New",
+    "Fusion.New",
+    "create",
+    "vide.create",
+    "Vide.create",
+  ],
 };
 
 suite("Fusion call detection", () => {
@@ -1010,6 +1028,31 @@ local b = create "Frame" {
     assert.strictEqual(tree[0].children.length, 1);
     assert.strictEqual(tree[0].children[0].call.className, "TextLabel");
   });
+
+  // Fork's three Vide-parens tests — ported as-is so future
+  // regressions in the parens-form path get caught early.
+  test("findEnclosingPropsCall picks up `Vide.create(\"Frame\", { | })`", () => {
+    const text = `Vide.create("Frame", { | })`;
+    const cursor = text.indexOf("|");
+    const stripped = text.replace("|", "");
+    const result = findEnclosingPropsCall(stripped, cursor, VIDE_PARTITION);
+    assert.strictEqual(result?.className, "Frame");
+    assert.strictEqual(result?.callShape, "parens");
+    assert.strictEqual(result?.alias, "Vide.create");
+  });
+
+  test("findAllCreateElementCalls handles parenthesised inline children", () => {
+    const text = `local b = Vide.create("Frame", {
+  Name = "Outer",
+  Vide.create("TextLabel", { Text = "Hi" }),
+})`;
+    const calls = findAllCreateElementCalls(text, VIDE_PARTITION);
+    assert.strictEqual(calls.length, 2);
+    const tree = buildCallTree(calls);
+    assert.strictEqual(tree.length, 1);
+    assert.strictEqual(tree[0].children.length, 1);
+    assert.strictEqual(tree[0].children[0].call.className, "TextLabel");
+  });
 });
 
 suite("Mixed framework file", () => {
@@ -1038,6 +1081,49 @@ suite("Framework filtering", () => {
     const calls = findAllCreateElementCalls(text, reactOnly);
     assert.strictEqual(calls.length, 1);
     assert.strictEqual(calls[0].nameProp, "A");
+  });
+});
+
+suite("Parens-form inline-children scoping (1.5.0)", () => {
+  // 1.5.0 review: the inline-children fallback in the parens-form
+  // branch used to gate on `partition.curried.includes(alias)`, which
+  // misfires for non-Vide aliases that happen to land in the curried
+  // bucket via an alias override. Behaviour is now scoped to
+  // `partition.parensWithInlineChildren` — populated only for
+  // frameworks whose spec declares `childrenLayout: "inline"` AND
+  // recognises the parens shape (today: Vide only).
+
+  test("React 2-arg parens never sets inline-children", () => {
+    // `e("Frame", { Inner = e("X", {}) })` — `Inner` is a prop value,
+    // not a sibling child. With React-only aliases (no curried entries)
+    // the inline-children branch must NOT fire, so the inner call
+    // remains a sibling at the tree root, not nested under `Frame`.
+    const text = `e("Frame", { Inner = e("X", {}) })`;
+    const calls = findAllCreateElementCalls(text, {
+      parens: ["e"],
+      curried: [],
+      parensWithInlineChildren: [],
+    });
+    const outer = calls.find((c) => c.className === "Frame");
+    assert.strictEqual(outer?.childrenStart, undefined);
+    // The buildCallTree result depends on Vide's inline-children
+    // membership; with React-only, both calls stay at the root.
+    assert.strictEqual(buildCallTree(calls).length, 2);
+  });
+
+  test("Vide parens form DOES set inline-children", () => {
+    // The positive case — when the alias IS in
+    // `parensWithInlineChildren`, the props brace doubles as the
+    // children container, so the inner call nests as a tree child.
+    const text = `Vide.create("Frame", { Vide.create("X", {}) })`;
+    const calls = findAllCreateElementCalls(text, {
+      parens: ["Vide.create"],
+      curried: ["Vide.create"],
+      parensWithInlineChildren: ["Vide.create"],
+    });
+    const outer = calls.find((c) => c.className === "Frame");
+    assert.ok(outer?.childrenStart !== undefined);
+    assert.strictEqual(buildCallTree(calls).length, 1);
   });
 });
 
@@ -1262,6 +1348,16 @@ suite("findEnclosingFactoryStringArg", () => {
     assert.ok(r);
     assert.strictEqual(r?.callShape, "parens");
     assert.strictEqual(r?.alias, "Roact.createElement");
+  });
+
+  // Fork's `Vide.create("…")` parens-form string-arg test —
+  // the alias lives in both partition buckets so the parens-form
+  // detector should match it (and not just the curried form).
+  test("parens form — Vide.create", () => {
+    const r = detectArg(`Vide.create("Fr|")`);
+    assert.ok(r);
+    assert.strictEqual(r?.callShape, "parens");
+    assert.strictEqual(r?.alias, "Vide.create");
   });
 
   test("curried form — Fusion New", () => {
@@ -1623,5 +1719,329 @@ suite("Direct instance-call detection (Vide)", () => {
     assert.ok(!set.has("Sound"));
     assert.ok(!set.has("Tween"));
     assert.ok(!set.has("Workspace"));
+  });
+});
+
+// ============================================================================
+// 1.5.0 — Active-framework detection (per-file framework discovery)
+// ============================================================================
+//
+// Drives the snippet- and completion-gating system that lets a Vide
+// file surface only Vide snippets, a React file only React, etc.
+// Detector lives in `src/activeFramework.ts`; we test the pure
+// text-only helpers (require + factory-call scanning) since they're
+// the meaningful logic — override precedence is a one-line config
+// read and workspace fallback is a setter/getter pair.
+
+import { _internal as activeFrameworkInternal } from "../activeFramework";
+
+suite("activeFramework — detectFromRequires (1.5.0)", () => {
+  const { detectFromRequires } = activeFrameworkInternal;
+
+  test("require(...Packages.React) → react", () => {
+    const text =
+      `local React = require(ReplicatedStorage.Packages.React)\n` +
+      `local e = React.createElement\n`;
+    assert.strictEqual(detectFromRequires(text), "react");
+  });
+
+  test("require(...Packages.Roact) → roact (wins over react substring)", () => {
+    // "Roact" contains "react" as a substring; the priority order in
+    // detectFromRequires checks Roact first so the more-specific match
+    // wins. Regression guard: if someone swaps the test order, a Roact
+    // file would mis-detect as React and surface the wrong snippets.
+    const text =
+      `local Roact = require(ReplicatedStorage.Packages.Roact)\n` +
+      `local e = Roact.createElement\n`;
+    assert.strictEqual(detectFromRequires(text), "roact");
+  });
+
+  test("require(...vide) → vide", () => {
+    const text =
+      `local vide = require(ReplicatedStorage.Packages.vide)\n` +
+      `local create = vide.create\n`;
+    assert.strictEqual(detectFromRequires(text), "vide");
+  });
+
+  test("require(...Fusion) → fusion", () => {
+    const text =
+      `local Fusion = require(ReplicatedStorage.Packages.Fusion)\n` +
+      `local New = Fusion.New\n`;
+    assert.strictEqual(detectFromRequires(text), "fusion");
+  });
+
+  test("no require → undefined", () => {
+    // A file with no require at all should fall through; the calls
+    // path then takes over upstream of this helper.
+    const text = `local x = 1\nlocal y = 2\n`;
+    assert.strictEqual(detectFromRequires(text), undefined);
+  });
+
+  test("require inside a string literal still matches the regex (acceptable)", () => {
+    // The detection regex is intentionally permissive — it matches
+    // `require(... <name> ...)` shape anywhere in the file, including
+    // inside strings. The cost of stricter parsing isn't worth it
+    // (false positives here mean "we picked a framework for a file
+    // that wasn't really using one", which is the same effective
+    // behaviour as the workspace fallback). This test pins the
+    // current behaviour so we notice if it ever changes.
+    const text = `local s = "require(Packages.Vide)"\n`;
+    assert.strictEqual(detectFromRequires(text), "vide");
+  });
+});
+
+suite("activeFramework — detectFromCalls (1.5.0)", () => {
+  const { detectFromCalls } = activeFrameworkInternal;
+
+  // detectFromCalls relies on the real getAliasPartition(), which
+  // reads `luix.frameworks` from the workspace configuration. In the
+  // test extension host that defaults to all four frameworks
+  // enabled, so all aliases (`e`, `New`, `create`, `Vide.create`,
+  // `Roact.createElement`, …) participate.
+
+  test("e(\"Frame\", { … }) → react (factory-call fallback)", () => {
+    const text = `local x = e("Frame", { Name = "A" })`;
+    const fw = detectFromCalls(text);
+    assert.strictEqual(fw, "react");
+  });
+
+  test("New \"Frame\" { … } → fusion", () => {
+    const text = `local x = New "Frame" { Name = "A" }`;
+    const fw = detectFromCalls(text);
+    assert.strictEqual(fw, "fusion");
+  });
+
+  test("Vide.create(\"Frame\", { … }) → vide (fork's parens form)", () => {
+    // Forks the same alias added in 1.5.0 — guards that the
+    // detection's call-fallback path sees the parens-form alias
+    // alongside its curried twin.
+    const text = `local x = Vide.create("Frame", { Name = "A" })`;
+    const fw = detectFromCalls(text);
+    assert.strictEqual(fw, "vide");
+  });
+
+  test("Roact.createElement(\"Frame\", { … }) → roact", () => {
+    const text = `local x = Roact.createElement("Frame", { Name = "A" })`;
+    const fw = detectFromCalls(text);
+    assert.strictEqual(fw, "roact");
+  });
+
+  test("no factory call → undefined", () => {
+    const text = `local x = 1\nlocal function foo() return 42 end\n`;
+    assert.strictEqual(detectFromCalls(text), undefined);
+  });
+});
+
+// ============================================================================
+// 1.5.0 — Computed-key fast-path regexes (React / Roact / Fusion)
+// ============================================================================
+//
+// 1.4.x's fast-path was React-only (`[React.Event.X]`). 1.5.0 extends
+// it to Roact (same shape, different prefix) and adds Fusion's
+// quoted-string shapes (`[OnEvent "X"]`, `[OnChange "X"]`, `[Out "X"]`).
+// Tests below pin each regex shape so a refactor can't quietly drop
+// a framework's support.
+
+import { _internal as completionInternal } from "../completion";
+
+suite("Computed-key fast-paths (1.5.0)", () => {
+  const fp = completionInternal.COMPUTED_KEY_FAST_PATHS;
+
+  test("React: [React.Event.A → matches reactEvent", () => {
+    assert.ok(fp.reactEvent.exec("[React.Event.A"));
+    assert.ok(fp.reactEvent.exec("  [ React.Event.MouseEnter"));
+  });
+
+  test("Roact: [Roact.Event.A → matches roactEvent (1.5 — separate from React)", () => {
+    // 1.5.0 review: React and Roact get separate regexes so the
+    // active-framework gate downstream can suppress the Roact shape
+    // in React files and vice versa. Previously a single merged
+    // `(?:React|Roact)` regex matched both, which leaked Roact
+    // suggestions into React files when typing `[Roact.Event.…`.
+    assert.ok(fp.roactEvent.exec("[Roact.Event.Activated"));
+    assert.ok(fp.roactEvent.exec("[Roact.Event."));
+    // Cross-framework non-match: reactEvent must NOT swallow Roact.
+    assert.strictEqual(fp.reactEvent.exec("[Roact.Event.A"), null);
+    assert.strictEqual(fp.roactEvent.exec("[React.Event.A"), null);
+  });
+
+  test("Roact: [Roact.Change.A → matches roactChange (1.5 — separate from React)", () => {
+    assert.ok(fp.roactChange.exec("[Roact.Change.BackgroundColor3"));
+    assert.ok(fp.roactChange.exec("[Roact.Change."));
+    assert.strictEqual(fp.reactChange.exec("[Roact.Change.A"), null);
+    assert.strictEqual(fp.roactChange.exec("[React.Change.A"), null);
+  });
+
+  test("Fusion: [OnEvent \" → matches fusionEvent", () => {
+    assert.ok(fp.fusionEvent.exec(`[OnEvent "`));
+    assert.ok(fp.fusionEvent.exec(`  [ OnEvent "Activated`));
+  });
+
+  test("Fusion: [OnChange \" → matches fusionChange", () => {
+    assert.ok(fp.fusionChange.exec(`[OnChange "`));
+    assert.ok(fp.fusionChange.exec(`[OnChange "Text`));
+  });
+
+  test("Fusion: [Out \" → matches fusionOut", () => {
+    assert.ok(fp.fusionOut.exec(`[Out "`));
+    assert.ok(fp.fusionOut.exec(`[Out "Text`));
+  });
+
+  test("non-matching shapes do not match", () => {
+    // Plain text, no `[`, mid-identifier, wrong framework name, etc.
+    assert.strictEqual(fp.reactEvent.exec("React.Event.A"), null);
+    assert.strictEqual(fp.reactEvent.exec("[Vide.Event.A"), null);
+    assert.strictEqual(fp.roactEvent.exec("[Vide.Event.A"), null);
+    assert.strictEqual(fp.fusionEvent.exec(`OnEvent "A`), null);
+    assert.strictEqual(fp.fusionEvent.exec(`[OnChange "A`), null);
+    assert.strictEqual(fp.fusionOut.exec(`[OnEvent "A`), null);
+  });
+});
+
+// ============================================================================
+// 1.5.0 — Snippet-bag smoke tests
+// ============================================================================
+//
+// Every framework's element / scaffold / event / state snippets are
+// gated to that framework via `snip.framework === active`. The smoke
+// tests below assert the bag is populated for each (id, kind) pair —
+// catches accidental deletion / mis-gating of an entire bag in one
+// shot, instead of waiting for the user to notice an absent snippet.
+
+import { _internal as snippetsInternal } from "../elementSnippets";
+
+suite("Snippet-bag parity (1.5.0)", () => {
+  const SNIPPETS = snippetsInternal.SNIPPETS;
+  const ELEMENT_BASELINE = [
+    "Frame",
+    "ScrollingFrame",
+    "TextLabel",
+    "TextButton",
+    "ImageLabel",
+    "ImageButton",
+    "UIListLayout",
+    "UIGridLayout",
+    "UIPadding",
+    "UICorner",
+    "UIStroke",
+  ];
+
+  function byKindAndFramework(
+    kind: string,
+    framework: string
+  ): readonly { prefix: string }[] {
+    return SNIPPETS.filter(
+      (s) => s.kind === kind && s.framework === framework
+    );
+  }
+
+  function elementClassNames(framework: string): string[] {
+    // Each element snippet's prefix is `<letter><ClassName>` — `e` for
+    // React, `r` for Roact, `n` for Fusion, `c` for Vide. Strip the
+    // single-letter framework marker to recover the class name.
+    return byKindAndFramework("element", framework).map((s) =>
+      s.prefix.replace(/^[a-z]/, "")
+    );
+  }
+
+  test("React element snippets cover the 11-class baseline", () => {
+    const classes = elementClassNames("react");
+    for (const cls of ELEMENT_BASELINE) {
+      assert.ok(classes.includes(cls), `missing eReact snippet for ${cls}`);
+    }
+  });
+
+  test("Roact element snippets cover the 11-class baseline (1.5.0 new)", () => {
+    const classes = elementClassNames("roact");
+    for (const cls of ELEMENT_BASELINE) {
+      assert.ok(classes.includes(cls), `missing rRoact snippet for ${cls}`);
+    }
+  });
+
+  test("Fusion element snippets cover the 11-class baseline (1.5.0 expanded)", () => {
+    const classes = elementClassNames("fusion");
+    for (const cls of ELEMENT_BASELINE) {
+      assert.ok(classes.includes(cls), `missing nFusion snippet for ${cls}`);
+    }
+  });
+
+  test("Vide element snippets cover the 11-class baseline (1.5.0 expanded)", () => {
+    const classes = elementClassNames("vide");
+    for (const cls of ELEMENT_BASELINE) {
+      assert.ok(classes.includes(cls), `missing cVide snippet for ${cls}`);
+    }
+  });
+
+  test("Per-framework scaffolds — rfc / rofc / nfc / vfc (1.5.0 new)", () => {
+    const scaffolds = SNIPPETS.filter((s) => s.kind === "scaffold");
+    const prefixToFw = new Map(scaffolds.map((s) => [s.prefix, s.framework]));
+    assert.strictEqual(prefixToFw.get("rfc"), "react");
+    assert.strictEqual(prefixToFw.get("rofc"), "roact");
+    assert.strictEqual(prefixToFw.get("nfc"), "fusion");
+    assert.strictEqual(prefixToFw.get("vfc"), "vide");
+  });
+
+  test("Per-framework event shorthands — reactEvent / roactEvent / onEvent / videEvent (1.5.0 new)", () => {
+    const events = SNIPPETS.filter((s) => s.kind === "event");
+    const prefixToFw = new Map(events.map((s) => [s.prefix, s.framework]));
+    assert.strictEqual(prefixToFw.get("reactEvent"), "react");
+    assert.strictEqual(prefixToFw.get("roactEvent"), "roact");
+    assert.strictEqual(prefixToFw.get("onEvent"), "fusion");
+    assert.strictEqual(prefixToFw.get("videEvent"), "vide");
+  });
+
+  test("Fusion state primitives — Value / Computed / Spring / Tween / Observer / For* (1.5.0 new)", () => {
+    const fusionState = byKindAndFramework("state", "fusion").map(
+      (s) => s.prefix
+    );
+    for (const prefix of [
+      "value",
+      "computed",
+      "spring",
+      "tween",
+      "observer",
+      "forKeys",
+      "forValues",
+      "forPairs",
+    ]) {
+      assert.ok(
+        fusionState.includes(prefix),
+        `missing Fusion state snippet: ${prefix}`
+      );
+    }
+  });
+
+  test("Vide state primitives — source / derive / effect / cleanup / etc. (1.5.0 new)", () => {
+    const videState = byKindAndFramework("state", "vide").map((s) => s.prefix);
+    for (const prefix of [
+      "source",
+      "derive",
+      "effect",
+      "cleanup",
+      "untrack",
+      "batch",
+      "show",
+      "switch",
+      "indexes",
+      "values",
+    ]) {
+      assert.ok(
+        videState.includes(prefix),
+        `missing Vide state snippet: ${prefix}`
+      );
+    }
+  });
+
+  test("Every framework-tagged snippet sits in one of the four frameworks", () => {
+    // Sanity check: no typos like "react " or "Fusion" sneaking in.
+    const valid = new Set(["react", "roact", "fusion", "vide"]);
+    for (const s of SNIPPETS) {
+      if (s.framework !== undefined) {
+        assert.ok(
+          valid.has(s.framework),
+          `snippet ${s.prefix} has invalid framework: ${s.framework}`
+        );
+      }
+    }
   });
 });

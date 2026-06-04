@@ -16,16 +16,31 @@ import { DIRECT_INSTANTIABLE_CLASS_NAMES } from "./data";
 
 export type FrameworkId = "react" | "roact" | "fusion" | "vide";
 
+export type CallShape = "parens" | "curried";
+
 export interface FrameworkSpec {
   id: FrameworkId;
   /** Function-name aliases used to construct elements. */
   aliases: string[];
   /**
-   * Call shape:
+   * Canonical call shape — what the framework's own documentation
+   * uses, and what Luix emits when generating snippet bodies /
+   * scaffolds.
    *   - `parens`: `f(a, b, c)` (React, Roact)
    *   - `curried`: Lua sugar `f "x" { ... }` (Fusion, Vide)
    */
-  callShape: "parens" | "curried";
+  callShape: CallShape;
+  /**
+   * Every call shape the parser should *recognise* (not just the
+   * canonical one). Vide is the motivating case: it accepts both
+   * `create "Frame" { ... }` (curried) and `create("Frame", { ... })`
+   * / `Vide.create("Frame", { ... })` (parens). Defaults to
+   * `[callShape]` when omitted, so existing frameworks behave as
+   * before. Aliases of multi-shape frameworks land in *every*
+   * recognised bucket of `getAliasPartition()`, so detection regexes
+   * for either shape pick them up.
+   */
+  recognizedCallShapes?: CallShape[];
   /**
    * For "curried" frameworks: how children appear.
    *   - `table-key`: children under a special key like `[Children]`.
@@ -66,8 +81,14 @@ export const FRAMEWORKS: Record<FrameworkId, FrameworkSpec> = {
   },
   vide: {
     id: "vide",
-    aliases: ["create", "vide.create"],
+    // Vide is unique: `create "Frame" { … }` (curried) and
+    // `create("Frame", { … })` / `Vide.create("Frame", { … })`
+    // (parens) are both valid, idiomatic shapes. The aliases below
+    // land in *both* alias buckets via `recognizedCallShapes` so the
+    // parser detects either form.
+    aliases: ["create", "vide.create", "Vide.create"],
     callShape: "curried",
+    recognizedCallShapes: ["parens", "curried"],
     childrenLayout: "inline",
     eventsAsProps: true,
   },
@@ -145,22 +166,56 @@ export function getEnabledFrameworks(): FrameworkSpec[] {
 export interface AliasPartition {
   parens: string[];
   curried: string[];
+  /** Aliases of frameworks whose `childrenLayout === "inline"` and
+   *  that recognise the `parens` shape. The parens-form parse path
+   *  uses this to decide whether the props brace also doubles as the
+   *  inline-children container (Vide's `create("Frame", { Child(...) })`
+   *  shape). Pre-built here so the parser doesn't have to call back
+   *  into `findFrameworkForAlias` per match. Today only Vide qualifies.
+   *
+   *  Optional so hand-rolled test fixtures and legacy callers stay
+   *  compiling; the parser falls back to the legacy
+   *  `partition.curried.includes(alias)` behaviour when the field is
+   *  absent (which is exactly what those callers had before 1.5.0). */
+  parensWithInlineChildren?: string[];
 }
 
 export function getAliasPartition(): AliasPartition {
   if (_aliasPartition) return _aliasPartition;
-  const result: AliasPartition = { parens: [], curried: [] };
+  const parens: string[] = [];
+  const curried: string[] = [];
+  const parensWithInlineChildren: string[] = [];
   for (const framework of getEnabledFrameworks()) {
-    const bucket =
-      framework.callShape === "parens" ? result.parens : result.curried;
-    for (const alias of framework.aliases) {
-      if (!bucket.includes(alias)) {
-        bucket.push(alias);
+    // Frameworks default to a single recognised shape (their canonical
+    // one). Vide overrides this to register its aliases in both
+    // buckets so `create "Frame" { … }` and `create("Frame", { … })`
+    // both detect.
+    const shapes = framework.recognizedCallShapes ?? [framework.callShape];
+    const recognisesParens = shapes.includes("parens");
+    const inlineChildren = framework.childrenLayout === "inline";
+    for (const shape of shapes) {
+      const bucket = shape === "parens" ? parens : curried;
+      for (const alias of framework.aliases) {
+        if (!bucket.includes(alias)) {
+          bucket.push(alias);
+        }
+      }
+    }
+    // Only frameworks whose parens form actually carries inline
+    // children (Vide) qualify — scoping by the spec, not just bucket
+    // membership, so a cross-framework alias collision (e.g. a user
+    // adding "e" to `luix.fusion.aliases`) doesn't trick a React
+    // 2-arg call into being parsed as an inline-children container.
+    if (recognisesParens && inlineChildren) {
+      for (const alias of framework.aliases) {
+        if (!parensWithInlineChildren.includes(alias)) {
+          parensWithInlineChildren.push(alias);
+        }
       }
     }
   }
-  _aliasPartition = result;
-  return result;
+  _aliasPartition = { parens, curried, parensWithInlineChildren };
+  return _aliasPartition;
 }
 
 /**

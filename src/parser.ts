@@ -92,6 +92,14 @@ export interface ColorLiteral {
 export interface AliasPartition {
   parens: string[];
   curried: string[];
+  /** Aliases of frameworks whose `childrenLayout === "inline"` and
+   *  that recognise the `parens` shape (today: Vide). When the
+   *  matched alias of a parens-form call is in this set, the props
+   *  table doubles as the inline-children container. Optional so
+   *  hand-rolled test fixtures and legacy callers stay compiling;
+   *  callers fall back to the legacy bucket-membership check when
+   *  absent. Populated by `getAliasPartition()` in `./frameworks.ts`. */
+  parensWithInlineChildren?: string[];
 }
 
 function asPartition(aliases: AliasPartition | string[]): AliasPartition {
@@ -1491,12 +1499,18 @@ function findAllCreateElementCallsImpl(
   // Pass 1: parens form — `ALIAS ( ARG , {…}[, {…}] )`
   if (partition.parens.length > 0) {
     const aliasPattern = buildAliasAlternation(partition.parens);
+    // Capturing the alias (was non-capturing): lets us detect when
+    // the matched alias is *also* a curried-bucket alias (Vide:
+    // `create` / `Vide.create` register in both buckets). In that
+    // case the props brace doubles as the inline-children container,
+    // matching Vide's `Vide.create("Frame", { Child() })` shape.
     const re = new RegExp(
-      `(?<![A-Za-z0-9_.])(?:${aliasPattern})\\s*\\(`,
+      `(?<![A-Za-z0-9_.])(${aliasPattern})\\s*\\(`,
       "g"
     );
     let m: RegExpExecArray | null;
     while ((m = re.exec(masked)) !== null) {
+      const alias = m[1];
       const aliasStart = m.index;
       const openParen = m.index + m[0].length - 1;
       const closeParen = findMatchingParen(masked, openParen);
@@ -1555,6 +1569,23 @@ function findAllCreateElementCallsImpl(
             childrenEnd = closeBrace;
           }
         }
+      } else if (
+        // Prefer the precise spec-derived set when present (1.5.0+);
+        // fall back to the legacy bucket-membership check for callers
+        // (notably hand-rolled test fixtures) that don't populate the
+        // new field. Same effective behaviour for the default config
+        // where the only multi-shape framework is Vide.
+        (partition.parensWithInlineChildren
+          ? partition.parensWithInlineChildren.includes(alias)
+          : partition.curried.includes(alias)) &&
+        propsBraceStart !== undefined &&
+        propsBraceEnd !== undefined
+      ) {
+        // Vide-style parens form: the props table doubles as the
+        // inline-children container. `Vide.create("Frame", { Child() })`
+        // — `Child()` lives in the same brace as the props.
+        childrenStart = propsBraceStart + 1;
+        childrenEnd = propsBraceEnd;
       }
 
       results.push({
