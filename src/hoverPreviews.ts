@@ -259,7 +259,8 @@ function tryElementPreviewHover(
   if (
     text.indexOf("UIPadding") === -1 &&
     text.indexOf("UICorner") === -1 &&
-    text.indexOf("UIStroke") === -1
+    text.indexOf("UIStroke") === -1 &&
+    text.indexOf("UIShadow") === -1
   ) {
     return undefined;
   }
@@ -308,6 +309,9 @@ function tryElementPreviewHover(
       break;
     case "UIStroke":
       md = renderUIStrokeMarkdown(propMap);
+      break;
+    case "UIShadow":
+      md = renderUIShadowMarkdown(propMap);
       break;
   }
   if (!md) {
@@ -416,33 +420,96 @@ function renderUIPaddingMarkdown(
   return md;
 }
 
+export interface CornerRadii {
+  tl: number;
+  tr: number;
+  br: number;
+  bl: number;
+  /** True when the radii came from a uniform `CornerRadius` (which
+   *  overrides the individual props at runtime). */
+  fromCornerRadius: boolean;
+}
+
+/**
+ * Resolve the four effective corner radii (offset px) from a UICorner's
+ * props. `CornerRadius` — when present — sets all four and overrides the
+ * individual props (matching Roblox). Otherwise each corner reads its
+ * own `*Radius` prop (missing → 0). Pure — unit-tested.
+ */
+export function cornerRadiiFromProps(props: Map<string, string>): CornerRadii {
+  const cornerRadius = props.get("CornerRadius");
+  if (cornerRadius) {
+    const r = Math.max(0, parseUDimOffset(cornerRadius));
+    return { tl: r, tr: r, br: r, bl: r, fromCornerRadius: true };
+  }
+  return {
+    tl: Math.max(0, parseUDimOffset(props.get("TopLeftRadius"))),
+    tr: Math.max(0, parseUDimOffset(props.get("TopRightRadius"))),
+    br: Math.max(0, parseUDimOffset(props.get("BottomRightRadius"))),
+    bl: Math.max(0, parseUDimOffset(props.get("BottomLeftRadius"))),
+    fromCornerRadius: false,
+  };
+}
+
+/**
+ * SVG path for a rectangle with independent corner radii. A `<rect>`
+ * only supports a single `rx`/`ry`, so per-corner rounding needs a path
+ * with an arc at each rounded corner (and a sharp line where the radius
+ * is 0). Drawn clockwise from the top edge. Pure — unit-tested.
+ */
+export function roundedRectPath(
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  tl: number,
+  tr: number,
+  br: number,
+  bl: number
+): string {
+  const parts: string[] = [];
+  parts.push(`M ${x + tl} ${y}`);
+  parts.push(`H ${x + w - tr}`);
+  if (tr > 0) parts.push(`A ${tr} ${tr} 0 0 1 ${x + w} ${y + tr}`);
+  parts.push(`V ${y + h - br}`);
+  if (br > 0) parts.push(`A ${br} ${br} 0 0 1 ${x + w - br} ${y + h}`);
+  parts.push(`H ${x + bl}`);
+  if (bl > 0) parts.push(`A ${bl} ${bl} 0 0 1 ${x} ${y + h - bl}`);
+  parts.push(`V ${y + tl}`);
+  if (tl > 0) parts.push(`A ${tl} ${tl} 0 0 1 ${x + tl} ${y}`);
+  parts.push("Z");
+  return parts.join(" ");
+}
+
 function renderUICornerMarkdown(
   props: Map<string, string>
 ): vscode.MarkdownString {
-  const radiusValue = props.get("CornerRadius");
-  // CornerRadius is a UDim. We render the offset portion visually since
-  // most Roblox UIs use offset-pixel radii. If scale is set, show it
-  // separately in the label.
-  let offset = 0;
-  let scale = 0;
-  if (radiusValue) {
-    const m = /UDim\.new\s*\(\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*\)/.exec(
-      radiusValue
-    );
-    if (m) {
-      scale = Number(m[1]);
-      offset = Number(m[2]);
-    }
-  }
-
   const W = 200;
   const H = 110;
-  // Visual radius — cap at 40 px so the box keeps a recognisable shape.
-  const r = Math.min(40, Math.max(0, offset));
+  const x = 10;
+  const y = 10;
+  const w = W - 20;
+  const h = H - 20;
+  // Cap each visual radius so the box keeps a recognisable shape (and
+  // can't exceed half the side, which would distort the path).
+  const maxR = Math.min(40, Math.min(w, h) / 2);
+  const clamp = (n: number) => Math.max(0, Math.min(maxR, n));
+
+  const radii = cornerRadiiFromProps(props);
+  const path = roundedRectPath(
+    x,
+    y,
+    w,
+    h,
+    clamp(radii.tl),
+    clamp(radii.tr),
+    clamp(radii.br),
+    clamp(radii.bl)
+  );
 
   const svg =
     `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">` +
-    `<rect x="10" y="10" width="${W - 20}" height="${H - 20}" rx="${r}" ry="${r}" fill="#7C5CFF" opacity="0.85" stroke="#FFFFFF" stroke-width="1"/>` +
+    `<path d="${path}" fill="#7C5CFF" opacity="0.85" stroke="#FFFFFF" stroke-width="1"/>` +
     `</svg>`;
   const uri = `data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`;
   const lines: string[] = [];
@@ -450,8 +517,20 @@ function renderUICornerMarkdown(
   lines.push("");
   lines.push(`![](${uri})`);
   lines.push("");
-  const label = scale !== 0 ? `${scale} × parent + ${offset} px` : `${offset} px`;
-  lines.push(`CornerRadius \`${label}\``);
+  if (radii.fromCornerRadius) {
+    // Surface a scale component in the label when CornerRadius uses one.
+    const m = /UDim\.new\s*\(\s*(-?\d+(?:\.\d+)?)\s*,/.exec(
+      props.get("CornerRadius") ?? ""
+    );
+    const scale = m ? Number(m[1]) : 0;
+    const label =
+      scale !== 0 ? `${scale} × parent + ${radii.tl} px` : `${radii.tl} px`;
+    lines.push(`CornerRadius \`${label}\``);
+  } else {
+    lines.push(
+      `TL \`${radii.tl}\` · TR \`${radii.tr}\` · BR \`${radii.br}\` · BL \`${radii.bl}\` px`
+    );
+  }
   const md = new vscode.MarkdownString(lines.join("\n"));
   md.isTrusted = false;
   md.supportHtml = false;
@@ -483,6 +562,81 @@ function renderUIStrokeMarkdown(
   lines.push(`![](${uri})`);
   lines.push("");
   lines.push(`Thickness \`${thickness}\` · Color \`${color}\` · Mode \`${mode}\``);
+  const md = new vscode.MarkdownString(lines.join("\n"));
+  md.isTrusted = false;
+  md.supportHtml = false;
+  return md;
+}
+
+/** Pull the offset (pixel) components out of a `UDim2` value —
+ *  `UDim2.fromOffset(x, y)` or `UDim2.new(sx, ox, sy, oy)`. Scale-only
+ *  forms read as 0 (we visualise pixels). */
+function parseUDim2Offset(value: string | undefined): { x: number; y: number } {
+  if (!value) {
+    return { x: 0, y: 0 };
+  }
+  let m = /UDim2\.fromOffset\s*\(\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*\)/.exec(
+    value
+  );
+  if (m) {
+    return { x: Number(m[1]), y: Number(m[2]) };
+  }
+  m = /UDim2\.new\s*\(\s*-?\d+(?:\.\d+)?\s*,\s*(-?\d+(?:\.\d+)?)\s*,\s*-?\d+(?:\.\d+)?\s*,\s*(-?\d+(?:\.\d+)?)\s*\)/.exec(
+    value
+  );
+  if (m) {
+    return { x: Number(m[1]), y: Number(m[2]) };
+  }
+  return { x: 0, y: 0 };
+}
+
+function renderUIShadowMarkdown(
+  props: Map<string, string>
+): vscode.MarkdownString {
+  const offset = parseUDim2Offset(props.get("Offset"));
+  const spread = parseUDim2Offset(props.get("Spread")).x;
+  const blur = parseUDimOffset(props.get("BlurRadius"));
+  const color = parseColor3Hex(props.get("Color"));
+  const transparency = Number(props.get("Transparency") ?? "0") || 0;
+  const shadowOpacity = Math.max(0, Math.min(1, 1 - transparency));
+
+  const W = 200;
+  const H = 140;
+  // The element casting the shadow — centred with generous margins so
+  // the shadow has room to render.
+  const ex = 60;
+  const ey = 42;
+  const ew = 80;
+  const eh = 56;
+  // Clamp the visual magnitudes so a large blur/offset/spread doesn't
+  // spill out of the preview box.
+  const cap = (n: number, max: number) =>
+    Math.max(-max, Math.min(max, n));
+  const ox = cap(offset.x, 24);
+  const oy = cap(offset.y, 24);
+  const sp = cap(spread, 16);
+  const bl = Math.max(0, cap(blur, 16));
+
+  const svg =
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">` +
+    `<defs><filter id="luixshadow" x="-60%" y="-60%" width="220%" height="220%">` +
+    `<feGaussianBlur stdDeviation="${(bl / 2).toFixed(2)}"/></filter></defs>` +
+    // Background panel so the shadow reads against something.
+    `<rect x="0" y="0" width="${W}" height="${H}" fill="#1E1E26"/>` +
+    // The shadow: element rect, expanded by spread, translated by offset, blurred.
+    `<rect x="${ex - sp + ox}" y="${ey - sp + oy}" width="${ew + 2 * sp}" height="${eh + 2 * sp}" rx="8" fill="${color}" fill-opacity="${shadowOpacity.toFixed(2)}" filter="url(#luixshadow)"/>` +
+    // The element on top.
+    `<rect x="${ex}" y="${ey}" width="${ew}" height="${eh}" rx="8" fill="#7C5CFF" stroke="#FFFFFF" stroke-width="1"/>` +
+    `</svg>`;
+  const uri = `data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`;
+  const lines: string[] = [];
+  lines.push("**UIShadow**");
+  lines.push("");
+  lines.push(`![](${uri})`);
+  lines.push("");
+  lines.push(
+    `Offset \`${offset.x}, ${offset.y}\` · Blur \`${blur}\` · Spread \`${spread}\` · Color \`${color}\` · Transparency \`${transparency}\``
+  );
   const md = new vscode.MarkdownString(lines.join("\n"));
   md.isTrusted = false;
   md.supportHtml = false;

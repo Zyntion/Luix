@@ -2,7 +2,7 @@
   "name": "luix-roblox",
   "displayName": "Luix Roblox",
   "description": "All-in-one Roblox UI authoring helper for React-Luau, Fusion, Vide, and Roact — prop completions, hover docs, inlay hints, color preview, deprecation diagnostics, and more.",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "publisher": "ericplane",
   "icon": "assets/icon.png",
   "author": {
@@ -377,6 +377,21 @@
           "default": "value-with-comma",
           "markdownDescription": "Controls what gets inserted when you accept a completion."
         },
+        "luix.snippets.enabled": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Master toggle for Luix's context-aware snippets — element snippets (`eFrame`, `nTextLabel`, `cFrame`, …), component scaffolds (`rfc`, `nfc`, …), event shorthands, state-primitive snippets, the React hook snippets, and the `cfangles` expression snippets. Disable to keep them out of your completion list entirely. Does **not** affect workspace-component completions or prop completions."
+        },
+        "luix.snippets.hooks": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "When enabled (default), surface the React hook snippets (`useState`, `useEffect`, `useRef`, `useMemo`, `useCallback`) at statement positions in React files. Turn off to hide just the hook snippets while keeping the other Luix snippets (controlled by `#luix.snippets.enabled#`).\n\nThe cross-framework equivalent is `#luix.snippets.state#` (Fusion / Vide reactive primitives)."
+        },
+        "luix.snippets.state": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "When enabled (default), surface each framework's state / reactivity primitive snippets at statement positions:\n\n- **Fusion** — `value`, `computed`, `spring`, `tween`, `observer`, `forKeys`, `forValues`, `forPairs`\n- **Vide** — `source`, `derive`, `effect`, `cleanup`, `untrack`, `batch`, `show`, `switch`, `indexes`, `values`\n\nTurn off to hide just these while keeping the other Luix snippets (controlled by `#luix.snippets.enabled#`). This is the Fusion / Vide parallel to `#luix.snippets.hooks#` (React's hooks are the same category for React)."
+        },
         "luix.typeAwareValues": {
           "type": "boolean",
           "default": true,
@@ -533,6 +548,16 @@
           "type": "boolean",
           "default": true,
           "markdownDescription": "When enabled (default), `color=\"…\"` values inside `<font>`, `<stroke>`, and `<mark>` RichText tags get VS Code's inline color swatch and picker. Independent from `#luix.colorPreview.enabled#` (which controls the `Color3.fromRGB(…)` / `Color3.new(…)` picker) so you can disable the Color3 picker — e.g. to avoid clashing with another Roblox-API extension — while keeping the RichText one."
+        },
+        "luix.robloxContent.enabled": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "When enabled (default), Luix autocompletes Roblox content URLs inside string literals:\n\n- **`rbxthumb://`** — dynamic thumbnails (avatar headshots, game icons, group emblems, …). Picking a type inserts a complete `type=…&id=…&w=…&h=…` skeleton whose width/height dropdown only offers the sizes that type actually renders (e.g. `AvatarHeadShot` → 48, 60, 150). A diagnostic flags hand-typed unsupported types / sizes.\n- **`rbxasset://`** — the client's bundled content files (`rbxasset://textures/ui/common/robux_color.png`, fonts, sounds, meshes). Paths are completed from your local Roblox install's `content` folder (see `#luix.robloxContent.path#`).\n\nHover any `rbxthumb://` URL to see its type, supported sizes, and any problems."
+        },
+        "luix.robloxContent.path": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Optional. Path to a Roblox `content` directory used to populate `rbxasset://` path completions. Leave empty to auto-discover the newest local install:\n\n- **Windows** — `%LOCALAPPDATA%\\Roblox\\Versions\\<version>\\content`\n- **macOS** — `~/Library/Application Support/Roblox/Versions/<version>/content`, or `RobloxStudio.app/Contents/Resources/content`\n\nYou can point this at a `content` folder directly, at a specific `version-…` folder, or at the parent `Versions` folder (the newest version with a `content` subfolder is used). If no install is found and this is unset, `rbxasset://` completion is silently inactive (`rbxthumb://` still works — it needs no local files)."
         },
         "luix.robloxGlyphs.enabled": {
           "type": "boolean",
@@ -706,7 +731,7 @@
         "luix.propValidation.enabled": {
           "type": "boolean",
           "default": true,
-          "markdownDescription": "When enabled (default), surfaces four prop-table diagnostics:\n\n- **Unknown property** on a known Roblox class (`ScrollingDirection` on a `Frame`), with a *Did you mean?* quick-fix.\n- **Duplicate key** in the same props table (`Size = …, Size = …`).\n- **Wrong enum type** — e.g. `BorderMode = Enum.Font.X` when `BorderMode` expects `Enum.BorderMode`.\n- **Overridden by component** — passing a prop to a custom component (`e(MyCard, { Position = ... })`) when that component hard-codes the same prop in its root element, so the call-site value would be silently ignored. Information-level since the heuristic is purely textual.\n\nDisable to silence all four."
+          "markdownDescription": "When enabled (default), surfaces these prop-table diagnostics:\n\n- **Unknown property** on a known Roblox class (`ScrollingDirection` on a `Frame`), with a *Did you mean?* quick-fix.\n- **Duplicate key** in the same props table (`Size = …, Size = …`).\n- **Wrong enum type** — e.g. `BorderMode = Enum.Font.X` when `BorderMode` expects `Enum.BorderMode`.\n- **Overridden by component** — passing a prop to a custom component (`e(MyCard, { Position = ... })`) when that component hard-codes the same prop in its root element, so the call-site value would be silently ignored. Information-level since the heuristic is purely textual.\n- **UICorner conflict** — setting `CornerRadius` together with the individual `BottomLeftRadius` / `BottomRightRadius` / `TopLeftRadius` / `TopRightRadius` props, since `CornerRadius` overrides all four.\n- **UICorner collapsible** — when all four individual radii are equal (and there's no `CornerRadius`), an info-level hint suggests collapsing them, with a *Collapse to a single CornerRadius* quick-fix. (The reverse *Expand to individual corner radii* refactor is on the lightbulb of any lone `CornerRadius`.)\n\nDisable to silence all of them."
         }
       }
     },

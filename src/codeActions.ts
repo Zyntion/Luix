@@ -173,6 +173,19 @@ function findImportInsertionLine(text: string): number {
 // Deprecation quick fixes — Font → FontFace, TextColor → TextColor3
 // ============================================================================
 
+/**
+ * Extract the `Enum.Font.X` family name from a `Font = …` snippet, or
+ * `undefined` when the value isn't an enum literal (a string like
+ * `"Gotham"`, a variable, …). The `Font` deprecation warning fires for
+ * every value form, but only the enum-literal form can be auto-converted
+ * to `FontFace = Font.fromName(...)` — other forms return `undefined`
+ * here so no (value-discarding) fix is offered. Pure — unit-tested.
+ */
+export function extractDeprecatedFontEnum(snippet: string): string | undefined {
+  const m = /Font\s*=\s*Enum\.Font\.([A-Za-z_]\w*)/.exec(snippet);
+  return m ? m[1] : undefined;
+}
+
 export class DeprecationCodeActionProvider
   implements vscode.CodeActionProvider
 {
@@ -189,7 +202,10 @@ export class DeprecationCodeActionProvider
 
     for (const diag of context.diagnostics) {
       if (diag.code === DIAGNOSTIC_CODE.DeprecatedFont) {
-        actions.push(this.fontFix(document, diag));
+        const fix = this.fontFix(document, diag);
+        if (fix) {
+          actions.push(fix);
+        }
       } else if (diag.code === DIAGNOSTIC_CODE.TypoTextColor) {
         actions.push(this.textColorFix(document, diag));
       } else if (diag.code === DIAGNOSTIC_CODE.UnknownProp) {
@@ -201,6 +217,11 @@ export class DeprecationCodeActionProvider
         actions.push(this.missingRichTextFix(document, diag));
       } else if (diag.code === DIAGNOSTIC_CODE.MissingAnchorPoint) {
         const fix = this.missingAnchorPointFix(document, diag);
+        if (fix) {
+          actions.push(fix);
+        }
+      } else if (diag.code === DIAGNOSTIC_CODE.CornerRadiusCollapsible) {
+        const fix = this.collapseCornerRadiusFix(document, diag);
         if (fix) {
           actions.push(fix);
         }
@@ -244,6 +265,37 @@ export class DeprecationCodeActionProvider
       document.uri,
       insertPos,
       `${indent}AnchorPoint = ${value},\n`
+    );
+    return action;
+  }
+
+  /**
+   * Collapse four equal individual corner radii into a single
+   * `CornerRadius`. The diagnostic's range already spans the four
+   * entries and its `_luixData.value` carries the shared value, so the
+   * fix is a one-line replace.
+   */
+  private collapseCornerRadiusFix(
+    document: vscode.TextDocument,
+    diag: vscode.Diagnostic
+  ): vscode.CodeAction | undefined {
+    const payload = (
+      diag as vscode.Diagnostic & { _luixData?: { value?: string } }
+    )._luixData;
+    if (!payload?.value) {
+      return undefined;
+    }
+    const action = new vscode.CodeAction(
+      "Collapse to a single `CornerRadius`",
+      vscode.CodeActionKind.QuickFix
+    );
+    action.diagnostics = [diag];
+    action.isPreferred = true;
+    action.edit = new vscode.WorkspaceEdit();
+    action.edit.replace(
+      document.uri,
+      diag.range,
+      `CornerRadius = ${payload.value}`
     );
     return action;
   }
@@ -303,10 +355,17 @@ export class DeprecationCodeActionProvider
   private fontFix(
     document: vscode.TextDocument,
     diag: vscode.Diagnostic
-  ): vscode.CodeAction {
-    const original = document.getText(diag.range);
-    const m = /Font\s*=\s*Enum\.Font\.([A-Za-z_]\w*)/.exec(original);
-    const enumName = m ? m[1] : "SourceSans";
+  ): vscode.CodeAction | undefined {
+    // Only auto-convert the `Enum.Font.X` form, where we can map the
+    // enum to the right `Font.fromName(family, weight)`. For any other
+    // value (`Font = "Gotham"`, a variable, …) we can't build the
+    // replacement reliably — and silently substituting a default would
+    // discard the user's value — so offer no fix. The deprecation
+    // warning still stands.
+    const enumName = extractDeprecatedFontEnum(document.getText(diag.range));
+    if (!enumName) {
+      return undefined;
+    }
     const replacement = `FontFace = ${buildFontFaceReplacement(enumName)}`;
 
     const action = new vscode.CodeAction(

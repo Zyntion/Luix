@@ -49,6 +49,7 @@ import {
   UDim2FromChildrenCodeActionProvider,
   UDim2ResolveCodeActionProvider,
 } from "./udim2Convert";
+import { UICornerCodeActionProvider } from "./uiCorner";
 import {
   DEFAULT_ALIASES,
   PROP_TYPES,
@@ -78,6 +79,13 @@ import {
   RobloxGlyphHoverProvider,
   RobloxGlyphInlayHintsProvider,
 } from "./robloxGlyphs";
+import {
+  RbxAssetCompletionProvider,
+  RbxThumbCompletionProvider,
+  RbxThumbDiagnostics,
+  RbxThumbHoverProvider,
+  resetContentCache,
+} from "./robloxContent";
 import {
   ComponentsTreeProvider,
   WorkspaceTreeProvider,
@@ -351,6 +359,19 @@ export function activate(context: vscode.ExtensionContext) {
       }
     )
   );
+  // UICorner — collapse four equal individual corner radii into one
+  // `CornerRadius`, or expand a `CornerRadius` into the four individual
+  // props. Fires when the cursor is inside a `UICorner` element call.
+  context.subscriptions.push(
+    vscode.languages.registerCodeActionsProvider(
+      selector,
+      new UICornerCodeActionProvider(),
+      {
+        providedCodeActionKinds:
+          UICornerCodeActionProvider.providedCodeActionKinds,
+      }
+    )
+  );
   // Wrap selection in Frame / ScrollingFrame / container w/ UIListLayout.
   context.subscriptions.push(
     vscode.languages.registerCodeActionsProvider(
@@ -586,6 +607,38 @@ export function activate(context: vscode.ExtensionContext) {
       new RobloxGlyphCompletionProvider(),
       ":"
     )
+  );
+
+  // Roblox content-URL autocomplete — `rbxthumb://` (dynamic thumbnails
+  // with per-type valid sizes) and `rbxasset://` (bundled content files
+  // scanned from the local install). The thumbnail diagnostic flags
+  // hand-typed unsupported sizes / types. All gated by
+  // `luix.robloxContent.enabled`; the content scan honours
+  // `luix.robloxContent.path`.
+  context.subscriptions.push(
+    vscode.languages.registerCompletionItemProvider(
+      selector,
+      new RbxThumbCompletionProvider(),
+      "/",
+      "=",
+      "&"
+    ),
+    vscode.languages.registerCompletionItemProvider(
+      selector,
+      new RbxAssetCompletionProvider(),
+      "/"
+    ),
+    vscode.languages.registerHoverProvider(
+      selector,
+      new RbxThumbHoverProvider()
+    ),
+    new RbxThumbDiagnostics(),
+    // Re-scan the content folder when the override path / toggle changes.
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration("luix.robloxContent")) {
+        resetContentCache();
+      }
+    })
   );
 
   // ---- Sidebar (Workspace + Components views) ----

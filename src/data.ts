@@ -357,11 +357,37 @@ export const classHierarchy: Record<string, ClassDef> = {
   },
 
   // ---- UI utilities ----
-  UICorner: { inherits: "Instance", own: ["CornerRadius"] },
+  UICorner: {
+    inherits: "Instance",
+    own: [
+      "CornerRadius",
+      "BottomLeftRadius",
+      "BottomRightRadius",
+      "TopLeftRadius",
+      "TopRightRadius",
+    ],
+  },
 
   UIGradient: {
     inherits: "Instance",
     own: ["Color", "Enabled", "Offset", "Rotation", "Transparency"],
+  },
+
+  // Renders a shadow below the parent UI instance. Currently
+  // "Not Browsable" but live — props per the API. `Offset` / `Spread`
+  // are `UDim2` and `BlurRadius` is `UDim` here (see PROP_TYPE_OVERRIDES;
+  // they collide with the global `Offset: Vector2`).
+  UIShadow: {
+    inherits: "Instance",
+    own: [
+      "BlurRadius",
+      "Color",
+      "Enabled",
+      "Offset",
+      "Spread",
+      "Transparency",
+      "ZIndex",
+    ],
   },
 
   UIStroke: {
@@ -505,6 +531,73 @@ export function flattenClassProps(
   return out;
 }
 
+// ----------------------------------------------------------------------
+// Deprecated-but-valid properties
+// ----------------------------------------------------------------------
+//
+// Some legacy properties are intentionally kept OUT of the prop lists
+// above so completion nudges users toward the modern replacement
+// (`Font` → `FontFace`, …). But those props are still *real* — the code
+// compiles and runs. Omitting them from `flattenClassProps` made the
+// unknown-prop validator report `Font = …` as "Unknown property", a
+// false positive on perfectly valid code (issue #2). This set lets the
+// validator treat them as known (so no error) while keeping them out of
+// the suggestion list. The deprecation diagnostic handles the migration
+// nudge separately.
+const DEPRECATED_VALID_PROPS: Record<string, string[]> = {
+  TextLabel: ["Font"],
+  TextButton: ["Font"],
+  TextBox: ["Font"],
+};
+
+/**
+ * True when `prop` is a deprecated-but-still-valid property of
+ * `className` (walking the inheritance chain). Consumed by the
+ * prop-validation diagnostic so legacy props like `Font` aren't flagged
+ * "unknown". Kept separate from `flattenClassProps` on purpose:
+ * deprecated props are *valid* but should not be *suggested*.
+ */
+export function isDeprecatedValidProp(
+  className: string,
+  prop: string,
+): boolean {
+  let current: string | undefined = className;
+  const seen = new Set<string>();
+  while (current && !seen.has(current)) {
+    seen.add(current);
+    if (DEPRECATED_VALID_PROPS[current]?.includes(prop)) {
+      return true;
+    }
+    current = classHierarchy[current]?.inherits;
+  }
+  return false;
+}
+
+// `UICorner`'s per-corner radius properties (Roblox 2024+). When
+// `CornerRadius` is also set it overrides all four, so they conflict —
+// the diagnostic flags that, and the code actions collapse four equal
+// corners into one `CornerRadius` / expand one into four.
+export const UICORNER_INDIVIDUAL_RADII = [
+  "BottomLeftRadius",
+  "BottomRightRadius",
+  "TopLeftRadius",
+  "TopRightRadius",
+];
+
+/**
+ * Given the prop keys present on a `UICorner`, return the individual
+ * corner-radius props that are overridden by a co-present
+ * `CornerRadius` (which sets all four). Empty when there's no conflict.
+ * Pure — unit-tested and shared by the diagnostic + code action.
+ */
+export function cornerRadiusConflicts(keys: Iterable<string>): string[] {
+  const set = new Set(keys);
+  if (!set.has("CornerRadius")) {
+    return [];
+  }
+  return UICORNER_INDIVIDUAL_RADII.filter((k) => set.has(k));
+}
+
 const eventsCache = new Map<string, string[]>();
 
 export function flattenClassEvents(
@@ -602,7 +695,7 @@ const ABSTRACT_CLASS_NAMES: ReadonlySet<string> = new Set([
  * local variable named after a non-UI Roblox class.
  */
 export const DIRECT_INSTANTIABLE_CLASS_NAMES: ReadonlySet<string> = new Set(
-  Object.keys(classHierarchy).filter((name) => !ABSTRACT_CLASS_NAMES.has(name))
+  Object.keys(classHierarchy).filter((name) => !ABSTRACT_CLASS_NAMES.has(name)),
 );
 
 /**
@@ -673,6 +766,10 @@ export const PROP_TYPES: Record<string, string> = {
   PaddingRight: "UDim",
   PaddingTop: "UDim",
   RowSpacing: "UDim",
+  BottomLeftRadius: "UDim",
+  BottomRightRadius: "UDim",
+  TopLeftRadius: "UDim",
+  TopRightRadius: "UDim",
 
   // Vector2
   AnchorPoint: "Vector2",
@@ -883,6 +980,17 @@ export const PROP_TYPE_OVERRIDES: Record<string, Record<string, string>> = {
   UIGradient: {
     Color: "ColorSequence",
     Transparency: "NumberSequence",
+  },
+  UIShadow: {
+    // `Offset` is globally `Vector2`; on UIShadow it's `UDim2`. The rest
+    // are either absent globally (`BlurRadius`, `Spread`) or ambiguous
+    // (`Color`, `Transparency`), so pin them here. `ZIndex` (number) and
+    // `Enabled` (boolean) resolve correctly from the global map.
+    BlurRadius: "UDim",
+    Color: "Color3",
+    Offset: "UDim2",
+    Spread: "UDim2",
+    Transparency: "number",
   },
 };
 

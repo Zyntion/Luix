@@ -4,6 +4,200 @@ All notable changes to **Luix** will be documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [1.5.1]
+
+Two of Roblox's content URL schemes are painful to type by hand and
+easy to get subtly wrong. 1.5.1 adds autocomplete (and validation) for
+both, inside any string literal — plus a batch of fixes and new snippet
+toggles from early user feedback.
+
+### `rbxthumb://` — dynamic thumbnails with per-type valid sizes
+
+Typing `rbxthumb://` now offers a completion per thumbnail type
+(`AvatarHeadShot`, `Avatar`, `GameIcon`, `GroupIcon`, `BadgeIcon`,
+`GamePass`, `Asset`, `BundleThumbnail`, `Outfit`). Picking one inserts a
+complete skeleton:
+
+```
+rbxthumb://type=AvatarHeadShot&id=${userId}&w=${48|60|150}&h=…
+```
+
+The crucial part: **the `w` / `h` dropdown only offers the sizes that
+type actually renders.** Each thumbnail type supports a fixed set of
+square sizes (e.g. `AvatarHeadShot` → 48 / 60 / 150, `GameIcon` →
+50 / 150, `Outfit` → 150 / 420) — a size Roblox doesn't support for that
+type silently fails at runtime. The size is mirrored into both `w` and
+`h` via a shared snippet choice, so you pick once. Sizes are the
+documented/known-rendering set (corroborated against Roblox's docs and
+Quenty's `RbxThumbUtils`).
+
+Editing an existing `w=` / `h=` re-offers that type's valid sizes, and
+hovering any `rbxthumb://` URL shows its type, supported sizes, and any
+problems.
+
+**Diagnostic:** hand-typed URLs with an unsupported size, an unknown
+type, or a bad `filters=` value get a warning (e.g. _"AvatarHeadShot
+doesn't support 200×200. Supported: 48×48, 60×60, 150×150."_). The
+diagnostic only fires on clearly-wrong values, never on half-typed URLs.
+
+### `rbxasset://` — bundled content files (official icons / textures)
+
+Typing `rbxasset://` now completes paths to the client's bundled
+content — `rbxasset://textures/ui/common/robux_color.png`, fonts,
+sounds, meshes, etc. — **one folder at a time, like a file explorer**.
+At `rbxasset://` you see `textures/`, `fonts/`, `sounds/`, …; accept a
+folder and the next level opens automatically; at a leaf folder you get
+just the file names (no full paths to memorise). Paths come from your
+**local Roblox install's `content` folder**, discovered automatically:
+
+- **Windows** — newest `%LOCALAPPDATA%\Roblox\Versions\<version>\content`
+- **macOS** — `~/Library/Application Support/Roblox/Versions/<version>/content`
+  or `RobloxStudio.app/Contents/Resources/content`
+
+The folder is scanned once per session (async, cached) and filtered to
+completable asset extensions (images, fonts, sounds, meshes). Point
+`luix.robloxContent.path` at a specific `content` / version / `Versions`
+folder to override discovery. If no install is found, `rbxasset://`
+completion is silently inactive (`rbxthumb://` still works — it needs no
+local files).
+
+### Settings
+
+- **`luix.robloxContent.enabled`** — `true` (default). Master toggle for
+  both completions, the hover, and the diagnostic.
+- **`luix.robloxContent.path`** — override the auto-discovered Roblox
+  `content` directory used for `rbxasset://` paths.
+
+### Added — `UIShadow` class support
+
+Luix now knows about Roblox's new `UIShadow` (the drop-shadow UI
+modifier). Inside `e("UIShadow", { … })` / `New "UIShadow" { … }` /
+`create "UIShadow" { … }` / `UIShadow({ … })` you get prop completion,
+type-aware value templates, hover docs, and no more "unknown property"
+warnings on its props: `BlurRadius`, `Color`, `Offset`, `Spread`,
+`Transparency`, `ZIndex`, `Enabled`. `UIShadow` also shows up in the
+class-name picker (`e("UISh…"`) and Vide's direct-instance calls.
+
+The type-aware templates respect `UIShadow`'s quirks — `Offset` and
+`Spread` are `UDim2` (not the global `Offset: Vector2`), and
+`BlurRadius` is a `UDim` — so accepting them inserts the right
+constructor.
+
+- **Element snippets** — `eUIShadow` / `nUIShadow` / `cUIShadow` /
+  `rUIShadow` (React / Fusion / Vide / Roact), matching the other UI
+  modifiers' snippets.
+- **Hover preview** — hovering an `e("UIShadow", …)` class name renders
+  an SVG of the shadow (offset, blur, spread, colour, transparency),
+  alongside the existing UIPadding / UICorner / UIStroke previews.
+
+### Added — UICorner per-corner radius support
+
+`UICorner` gained individual per-corner radius properties
+(`BottomLeftRadius`, `BottomRightRadius`, `TopLeftRadius`,
+`TopRightRadius`) alongside the uniform `CornerRadius`. Three things to
+go with them:
+
+- **Conflict warning** — setting `CornerRadius` _and_ any individual
+  corner radius is a mistake: `CornerRadius` overrides all four, so the
+  individual ones silently do nothing. Each dead individual prop now
+  gets a warning (_"`BottomLeftRadius` has no effect — `CornerRadius`
+  overrides all four corners…"_). Part of the prop-validation suite
+  (`luix.propValidation.enabled`).
+- **Collapse suggestion** — when all four individual radii are set to
+  the _same_ value and there's no `CornerRadius`, an **info-level hint**
+  underlines them (like the AnchorPoint hint) with a **"Collapse to a
+  single CornerRadius"** quick-fix that replaces the four lines with
+  one.
+- **Expand refactor** (lightbulb) — on a lone `CornerRadius`, **"Expand
+  to individual corner radii"** rewrites it into the four per-corner
+  props (each seeded with the original value) as a starting point for
+  per-corner tweaks.
+- **Hover preview** now renders **per-corner rounding** — the UICorner
+  hover SVG draws each corner from its own `*Radius` prop (via an SVG
+  path instead of a uniform `<rect>` corner), so a shape using only the
+  individual radii no longer previews as a plain square. `CornerRadius`
+  still shows uniform rounding (and overrides the individual ones).
+
+The conflict and collapse hints stay quiet when both forms are
+present — that's a mistake to fix, not a shape to convert between.
+
+### Fixed — `Font` wrongly flagged as an "unknown property"
+
+`Font` was intentionally left out of the text-class prop lists to nudge
+users toward `FontFace` — but that made the prop-validation diagnostic
+report `Font = …` on a `TextLabel` / `TextButton` / `TextBox` as
+**"Unknown property `Font`"**, a false positive on valid, working code
+(issue #2). Worse, the "Did you mean? `FontFace`" quick-fix broke the
+code when the value was an `Enum.Font` (which `FontFace` doesn't
+accept).
+
+`Font` is now modelled as a **deprecated-but-valid** property: the
+validator recognises it (no more "unknown property" error), but it
+stays out of completion suggestions so `FontFace` is still what gets
+suggested. A `Font` on a non-text class (e.g. `Frame`) is still
+correctly flagged as unknown.
+
+The **deprecation warning now fires for _every_ value form**, not just
+`Font = Enum.Font.X` — `Font = "Gotham"`, `Font = someVariable`, etc.
+all get the info-level _"`Font` is deprecated; prefer `FontFace`"_ hint
+(scoped to text classes, since that's where `Font` actually exists).
+The `FontFace = Font.fromName(...)` **auto-fix is offered only for the
+`Enum.Font.X` form**, where the conversion is reliable — for string /
+variable values it warns without a fix rather than silently swapping in
+a default and discarding your value.
+
+### Fixed — auto-imports fired even when disabled
+
+`luix.autoImport.enabled` (default **off**) only ever gated the
+diagnostic + quick-fix path. The _completion-time_ auto-import — the
+`require` line that gets inserted when you accept a workspace-component
+completion — never checked the setting, so it ran for everyone
+regardless. Reported as _"I disabled auto imports but I'm still getting
+auto import suggestions."_
+
+Now the require insertion is gated on `luix.autoImport.enabled`. When
+it's off, the component completion still appears and still inserts the
+framework-correct call shape (`e(GameCard, { … })` / `GameCard { … }`) —
+it just no longer adds the `require` line, and its detail no longer
+says "auto-imports …".
+
+### Added — snippet toggles
+
+- **`luix.snippets.enabled`** (default `true`) — master switch for
+  Luix's context-aware snippets (element snippets, scaffolds, event
+  shorthands, state primitives, hooks, `cfangles`). Turn it off for a
+  quieter completion list. Doesn't affect workspace-component or prop
+  completions.
+- **`luix.snippets.hooks`** (default `true`) — hide just the React hook
+  snippets (`useState`, `useEffect`, `useRef`, `useMemo`,
+  `useCallback`) while keeping everything else. Answers _"I can't find a
+  way to disable those hook snippets."_
+- **`luix.snippets.state`** (default `true`) — the cross-framework
+  parallel to `luix.snippets.hooks`: hide each framework's state /
+  reactivity primitive snippets (Fusion `value` / `computed` / `spring`
+  / `tween` / `observer` / `for*`, Vide `source` / `derive` / `effect`
+  / `cleanup` / …) while keeping everything else. Hooks are React's
+  equivalent of this category, so the two toggles give every framework
+  its own off-switch for "reactive snippets."
+
+### Files
+
+`src/robloxContent.ts` (new — data table, parser, validator,
+completion / hover providers, diagnostic, content discovery + scan),
+`src/uiCorner.ts` (new — expand refactor + collapse plan helper),
+`src/data.ts` (deprecated-but-valid props, UICorner radius data +
+conflict helper, `UIShadow` class + prop-type overrides),
+`src/diagnostics.ts` (skip deprecated-valid props in the unknown-prop
+check, UICorner conflict + collapse diagnostics, `Font` deprecation
+broadened to all value forms), `src/codeActions.ts` (`Font` auto-fix
+only for the `Enum.Font.X` form, collapse-CornerRadius quick-fix),
+`src/hoverPreviews.ts` (`UIShadow` SVG preview, UICorner per-corner
+rounding), `src/elementSnippets.ts` (snippet toggles, `*UIShadow`
+element snippets), `src/completion.ts` (auto-import gated on the
+setting), `src/extension.ts` (registration), `package.json` (new
+settings, version `1.5.0 → 1.5.1`), `src/test/extension.test.ts`
+(**248 passing**).
+
 ## [1.5.0]
 
 ### Active-framework detection + status-bar picker

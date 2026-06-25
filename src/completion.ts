@@ -820,11 +820,20 @@ export class FactoryComponentCompletionProvider
     // Same-file components are excluded: typing the name of a function
     // declared above in the same file doesn't need an import.
     const importConfig = getAutoImportConfig();
-    const existingRequires = collectExistingRequires(text);
-    const sameFileComponents = new Set(
-      scanDocument(text, aliases).keys()
-    );
-    const insertionLine = findRequireInsertionLine(text);
+    // Honour `luix.autoImport.enabled` (default off). When disabled the
+    // component completion still appears and still materialises the
+    // framework-correct call shape — it just doesn't insert a `require`.
+    // Previously the require was attached regardless of this setting,
+    // which is the "I disabled auto-imports but still get them" report.
+    // Skip the (non-trivial) require-scan work entirely when disabled.
+    const autoImportEnabled = importConfig.enabled;
+    const existingRequires = autoImportEnabled
+      ? collectExistingRequires(text)
+      : new Set<string>();
+    const sameFileComponents = autoImportEnabled
+      ? new Set(scanDocument(text, aliases).keys())
+      : new Set<string>();
+    const insertionLine = autoImportEnabled ? findRequireInsertionLine(text) : 0;
     const insertionPosition = new vscode.Position(insertionLine, 0);
 
     const out: vscode.CompletionItem[] = [];
@@ -843,8 +852,12 @@ export class FactoryComponentCompletionProvider
       item.insertText = new vscode.SnippetString(`${name}${ctx.trailing}`);
 
       if (
-        !existingRequires.has(name) &&
-        !sameFileComponents.has(name)
+        shouldInsertAutoImport(
+          autoImportEnabled,
+          name,
+          existingRequires,
+          sameFileComponents
+        )
       ) {
         const found = await this.workspaceIndex.findComponentFile(
           name,
@@ -869,6 +882,27 @@ export class FactoryComponentCompletionProvider
     }
     return out;
   }
+}
+
+/**
+ * Whether accepting a component completion should ALSO insert a
+ * `require` for it. Gated on `luix.autoImport.enabled` — previously the
+ * require was attached regardless of the setting, so disabling
+ * auto-imports didn't actually disable them on the completion path.
+ * Also skipped when the component is already required or declared in
+ * the same file. Pure — unit-tested.
+ */
+export function shouldInsertAutoImport(
+  autoImportEnabled: boolean,
+  name: string,
+  existingRequires: ReadonlySet<string>,
+  sameFileComponents: ReadonlySet<string>
+): boolean {
+  return (
+    autoImportEnabled &&
+    !existingRequires.has(name) &&
+    !sameFileComponents.has(name)
+  );
 }
 
 /**

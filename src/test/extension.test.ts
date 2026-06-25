@@ -2045,3 +2045,628 @@ suite("Snippet-bag parity (1.5.0)", () => {
     }
   });
 });
+
+// ============================================================================
+// 1.5.1 — Roblox content-URL autocomplete (rbxthumb:// + rbxasset://)
+// ============================================================================
+
+import {
+  RBXTHUMB_TYPES,
+  getRbxThumbType,
+  parseRbxThumb,
+  validateRbxThumb,
+  getEnclosingString,
+  computeRbxAssetChildren,
+  _internal as contentInternal,
+} from "../robloxContent";
+
+suite("rbxthumb type table (1.5.1)", () => {
+  test("every type's sizes are square-able (used as a single w=h choice)", () => {
+    // The completion mirrors one size choice into both w and h, which
+    // is only valid because every documented size is square. This test
+    // pins that invariant: each entry must have >=1 size and they must
+    // be positive integers.
+    for (const t of RBXTHUMB_TYPES) {
+      assert.ok(t.sizes.length > 0, `${t.type} has no sizes`);
+      for (const s of t.sizes) {
+        assert.ok(Number.isInteger(s) && s > 0, `${t.type} bad size ${s}`);
+      }
+    }
+  });
+
+  test("types are unique and lookup works", () => {
+    const seen = new Set<string>();
+    for (const t of RBXTHUMB_TYPES) {
+      assert.ok(!seen.has(t.type), `duplicate type ${t.type}`);
+      seen.add(t.type);
+      assert.strictEqual(getRbxThumbType(t.type), t);
+    }
+    assert.strictEqual(getRbxThumbType("NopeNotAType"), undefined);
+  });
+
+  test("AvatarHeadShot supports circular; others don't", () => {
+    assert.strictEqual(getRbxThumbType("AvatarHeadShot")?.circular, true);
+    assert.notStrictEqual(getRbxThumbType("GameIcon")?.circular, true);
+  });
+
+  test("known sizes match the documented set (spot-check)", () => {
+    assert.deepStrictEqual(getRbxThumbType("AvatarHeadShot")?.sizes, [48, 60, 150]);
+    assert.deepStrictEqual(getRbxThumbType("GameIcon")?.sizes, [50, 150]);
+    assert.deepStrictEqual(getRbxThumbType("BadgeIcon")?.sizes, [150]);
+    assert.deepStrictEqual(getRbxThumbType("Outfit")?.sizes, [150, 420]);
+  });
+});
+
+suite("parseRbxThumb (1.5.1)", () => {
+  test("parses a full URL", () => {
+    const p = parseRbxThumb(
+      "rbxthumb://type=AvatarHeadShot&id=2685270261&w=150&h=150"
+    );
+    assert.ok(p);
+    assert.strictEqual(p?.type, "AvatarHeadShot");
+    assert.strictEqual(p?.id, "2685270261");
+    assert.strictEqual(p?.w, "150");
+    assert.strictEqual(p?.h, "150");
+  });
+
+  test("parses filters=circular", () => {
+    const p = parseRbxThumb(
+      "rbxthumb://type=AvatarHeadShot&id=1&w=150&h=150&filters=circular"
+    );
+    assert.strictEqual(p?.filters, "circular");
+  });
+
+  test("tolerates partial input (mid-typing)", () => {
+    const p = parseRbxThumb("rbxthumb://type=Game");
+    assert.strictEqual(p?.type, "Game");
+    assert.strictEqual(p?.w, undefined);
+  });
+
+  test("returns undefined for non-rbxthumb strings", () => {
+    assert.strictEqual(parseRbxThumb("rbxassetid://123"), undefined);
+    assert.strictEqual(parseRbxThumb("just text"), undefined);
+  });
+});
+
+suite("validateRbxThumb (1.5.1)", () => {
+  test("a fully valid URL has no problems", () => {
+    const p = parseRbxThumb("rbxthumb://type=GameIcon&id=1&w=150&h=150")!;
+    assert.deepStrictEqual(validateRbxThumb(p), []);
+  });
+
+  test("flags an unsupported size for the type", () => {
+    const p = parseRbxThumb("rbxthumb://type=AvatarHeadShot&id=1&w=200&h=200")!;
+    const probs = validateRbxThumb(p);
+    assert.strictEqual(probs.length, 1);
+    assert.strictEqual(probs[0].kind, "bad-size");
+    assert.ok(/doesn't support 200/.test(probs[0].message));
+  });
+
+  test("flags a valid size for a DIFFERENT type (per-type gating)", () => {
+    // 420 is valid for Outfit but not for AvatarHeadShot — the whole
+    // point of per-type sizing.
+    const ok = validateRbxThumb(
+      parseRbxThumb("rbxthumb://type=Outfit&id=1&w=420&h=420")!
+    );
+    assert.deepStrictEqual(ok, []);
+    const bad = validateRbxThumb(
+      parseRbxThumb("rbxthumb://type=AvatarHeadShot&id=1&w=420&h=420")!
+    );
+    assert.strictEqual(bad.some((p) => p.kind === "bad-size"), true);
+  });
+
+  test("flags non-square sizes", () => {
+    const p = parseRbxThumb("rbxthumb://type=GameIcon&id=1&w=150&h=50")!;
+    assert.strictEqual(validateRbxThumb(p).some((x) => x.kind === "bad-size"), true);
+  });
+
+  test("flags an unknown type", () => {
+    const p = parseRbxThumb("rbxthumb://type=Bogus&id=1&w=150&h=150")!;
+    const probs = validateRbxThumb(p);
+    assert.strictEqual(probs[0].kind, "unknown-type");
+  });
+
+  test("flags an unknown filter and circular-on-wrong-type", () => {
+    const badFilter = validateRbxThumb(
+      parseRbxThumb("rbxthumb://type=GameIcon&id=1&w=150&h=150&filters=square")!
+    );
+    assert.strictEqual(badFilter.some((p) => p.kind === "bad-filter"), true);
+    const circularWrong = validateRbxThumb(
+      parseRbxThumb("rbxthumb://type=GameIcon&id=1&w=150&h=150&filters=circular")!
+    );
+    assert.strictEqual(circularWrong.some((p) => p.kind === "bad-filter"), true);
+  });
+
+  test("missing size / type are flagged but as the low-signal kinds", () => {
+    // The diagnostic filters these out (they fire while typing); make
+    // sure they're tagged so that filter works.
+    const missingSize = validateRbxThumb(
+      parseRbxThumb("rbxthumb://type=GameIcon&id=1")!
+    );
+    assert.strictEqual(missingSize[0].kind, "missing-size");
+    const missingType = validateRbxThumb(parseRbxThumb("rbxthumb://")!);
+    assert.strictEqual(missingType[0].kind, "missing-type");
+  });
+});
+
+suite("getEnclosingString (1.5.1)", () => {
+  function at(text: string): ReturnType<typeof getEnclosingString> {
+    const offset = text.indexOf("|");
+    const stripped = text.replace("|", "");
+    return getEnclosingString(stripped, offset);
+  }
+
+  test("detects inside a double-quoted string", () => {
+    const enc = at(`local x = "rbxthumb://type=|"`);
+    assert.ok(enc);
+    assert.strictEqual(enc?.quote, '"');
+  });
+
+  test("detects inside single-quoted and backtick strings", () => {
+    assert.strictEqual(at(`local x = 'rbxasset://text|'`)?.quote, "'");
+    assert.strictEqual(at("local x = `rbxasset://text|`")?.quote, "`");
+  });
+
+  test("returns undefined outside any string", () => {
+    assert.strictEqual(at(`local x = foo(|)`), undefined);
+  });
+
+  test("innerStart points at the first char inside the quotes", () => {
+    const text = `e("ImageLabel", { Image = "rbxthumb://t|" })`;
+    const offset = text.indexOf("|");
+    const stripped = text.replace("|", "");
+    const enc = getEnclosingString(stripped, offset);
+    assert.ok(enc);
+    // The slice from innerStart should begin with the URL.
+    assert.ok(stripped.slice(enc!.innerStart).startsWith("rbxthumb://"));
+  });
+});
+
+suite("rbxthumb diagnostic scan regex (1.5.1)", () => {
+  test("matches a complete URL and stops at the closing quote", () => {
+    const re = contentInternal.RBXTHUMB_SCAN_RE;
+    re.lastIndex = 0;
+    const text = `Image = "rbxthumb://type=GameIcon&id=1&w=150&h=150",`;
+    const m = re.exec(text);
+    assert.ok(m);
+    assert.strictEqual(m![0], "rbxthumb://type=GameIcon&id=1&w=150&h=150");
+  });
+});
+
+suite("deprecated-but-valid props — Font (1.5.1)", () => {
+  const { isDeprecatedValidProp } = require("../data");
+
+  test("Font is a deprecated-but-valid prop on text classes", () => {
+    // Issue #2: `Font = …` on a TextLabel was wrongly flagged "Unknown
+    // property". It's deprecated (in favour of FontFace) but valid.
+    assert.strictEqual(isDeprecatedValidProp("TextLabel", "Font"), true);
+    assert.strictEqual(isDeprecatedValidProp("TextButton", "Font"), true);
+    assert.strictEqual(isDeprecatedValidProp("TextBox", "Font"), true);
+  });
+
+  test("Font is NOT valid on non-text classes (still flagged there)", () => {
+    // A Frame genuinely has no Font property — keep flagging that.
+    assert.strictEqual(isDeprecatedValidProp("Frame", "Font"), false);
+    assert.strictEqual(isDeprecatedValidProp("ImageLabel", "Font"), false);
+  });
+
+  test("real props aren't reported as deprecated-valid", () => {
+    assert.strictEqual(isDeprecatedValidProp("TextLabel", "Text"), false);
+    assert.strictEqual(isDeprecatedValidProp("TextLabel", "FontFace"), false);
+  });
+
+  test("Font stays OUT of the suggestion list (valid ≠ suggested)", () => {
+    // The whole point of keeping Font in a separate set: it's accepted
+    // by the validator but must not be offered in completion, so users
+    // are still nudged toward FontFace.
+    assert.ok(!_testing.flattenClassProps("TextLabel").includes("Font"));
+    assert.ok(_testing.flattenClassProps("TextLabel").includes("FontFace"));
+  });
+});
+
+suite("auto-import gating — shouldInsertAutoImport (1.5.1)", () => {
+  const { shouldInsertAutoImport } = require("../completion");
+  const empty = new Set<string>();
+
+  test("does NOT auto-import when the setting is disabled (the bug)", () => {
+    // The reported bug: disabling `luix.autoImport.enabled` left the
+    // completion-time require insertion firing anyway.
+    assert.strictEqual(
+      shouldInsertAutoImport(false, "GameCard", empty, empty),
+      false
+    );
+  });
+
+  test("auto-imports when enabled and the component isn't already known", () => {
+    assert.strictEqual(
+      shouldInsertAutoImport(true, "GameCard", empty, empty),
+      true
+    );
+  });
+
+  test("skips when already required, even if enabled", () => {
+    assert.strictEqual(
+      shouldInsertAutoImport(true, "GameCard", new Set(["GameCard"]), empty),
+      false
+    );
+  });
+
+  test("skips when declared in the same file, even if enabled", () => {
+    assert.strictEqual(
+      shouldInsertAutoImport(true, "GameCard", empty, new Set(["GameCard"])),
+      false
+    );
+  });
+});
+
+suite("rbxasset folder navigation — computeRbxAssetChildren (1.5.1)", () => {
+  const FILES = [
+    "textures/ui/common/robux_color.png",
+    "textures/ui/common/premium.png",
+    "textures/ui/button.png",
+    "textures/face.png",
+    "fonts/SourceSans.json",
+    "sounds/click.ogg",
+  ];
+
+  test("top level lists distinct first-segment folders + files", () => {
+    const children = computeRbxAssetChildren(FILES, "");
+    // Folders first (alpha), then files.
+    assert.deepStrictEqual(children, [
+      { name: "fonts", isFolder: true },
+      { name: "sounds", isFolder: true },
+      { name: "textures", isFolder: true },
+    ]);
+  });
+
+  test("drilling into textures/ shows its immediate children only", () => {
+    const children = computeRbxAssetChildren(FILES, "textures/");
+    assert.deepStrictEqual(children, [
+      { name: "ui", isFolder: true },
+      { name: "face.png", isFolder: false },
+    ]);
+  });
+
+  test("a leaf folder lists files, no full paths", () => {
+    const children = computeRbxAssetChildren(FILES, "textures/ui/common/");
+    assert.deepStrictEqual(children, [
+      { name: "premium.png", isFolder: false },
+      { name: "robux_color.png", isFolder: false },
+    ]);
+    // None of the entries leak the parent path.
+    assert.ok(children.every((c) => !c.name.includes("/")));
+  });
+
+  test("a directory that mixes a folder and files orders folders first", () => {
+    const children = computeRbxAssetChildren(FILES, "textures/");
+    assert.strictEqual(children[0].isFolder, true);
+    assert.strictEqual(children[0].name, "ui");
+  });
+
+  test("unknown prefix yields nothing", () => {
+    assert.deepStrictEqual(computeRbxAssetChildren(FILES, "nope/"), []);
+  });
+});
+
+// ============================================================================
+// 1.5.1 — UICorner: CornerRadius vs individual radii (diagnostic + refactors)
+// ============================================================================
+
+import { cornerRadiusConflicts } from "../data";
+import { planUICornerRefactor } from "../uiCorner";
+
+suite("UICorner conflict detection — cornerRadiusConflicts (1.5.1)", () => {
+  test("flags individual radii overridden by a co-present CornerRadius", () => {
+    const conflicts = cornerRadiusConflicts([
+      "CornerRadius",
+      "BottomLeftRadius",
+      "TopRightRadius",
+    ]);
+    assert.deepStrictEqual(conflicts.sort(), [
+      "BottomLeftRadius",
+      "TopRightRadius",
+    ]);
+  });
+
+  test("no CornerRadius → no conflict (individual radii are fine alone)", () => {
+    assert.deepStrictEqual(
+      cornerRadiusConflicts([
+        "BottomLeftRadius",
+        "BottomRightRadius",
+        "TopLeftRadius",
+        "TopRightRadius",
+      ]),
+      []
+    );
+  });
+
+  test("CornerRadius alone → no conflict", () => {
+    assert.deepStrictEqual(cornerRadiusConflicts(["CornerRadius"]), []);
+  });
+
+  test("all four overridden when all present with CornerRadius", () => {
+    const conflicts = cornerRadiusConflicts([
+      "CornerRadius",
+      "BottomLeftRadius",
+      "BottomRightRadius",
+      "TopLeftRadius",
+      "TopRightRadius",
+    ]);
+    assert.strictEqual(conflicts.length, 4);
+  });
+});
+
+suite("UICorner refactor planning — planUICornerRefactor (1.5.1)", () => {
+  const r = (key: string, valueText: string) => ({ key, valueText });
+  const FOUR_EQUAL = [
+    r("BottomLeftRadius", "UDim.new(0, 4)"),
+    r("BottomRightRadius", "UDim.new(0, 4)"),
+    r("TopLeftRadius", "UDim.new(0, 4)"),
+    r("TopRightRadius", "UDim.new(0, 4)"),
+  ];
+
+  test("collapse: four equal individual radii, no CornerRadius", () => {
+    const plan = planUICornerRefactor(FOUR_EQUAL);
+    assert.deepStrictEqual(plan, {
+      kind: "collapse",
+      value: "UDim.new(0, 4)",
+    });
+  });
+
+  test("collapse tolerates whitespace differences (trimmed compare)", () => {
+    const plan = planUICornerRefactor([
+      r("BottomLeftRadius", "  UDim.new(0, 4) "),
+      r("BottomRightRadius", "UDim.new(0, 4)"),
+      r("TopLeftRadius", "UDim.new(0, 4)"),
+      r("TopRightRadius", "UDim.new(0, 4)"),
+    ]);
+    assert.strictEqual(plan?.kind, "collapse");
+  });
+
+  test("no collapse when the four values differ", () => {
+    const plan = planUICornerRefactor([
+      r("BottomLeftRadius", "UDim.new(0, 4)"),
+      r("BottomRightRadius", "UDim.new(0, 8)"),
+      r("TopLeftRadius", "UDim.new(0, 4)"),
+      r("TopRightRadius", "UDim.new(0, 4)"),
+    ]);
+    assert.strictEqual(plan, undefined);
+  });
+
+  test("no collapse when only some corners are present", () => {
+    assert.strictEqual(
+      planUICornerRefactor([
+        r("BottomLeftRadius", "UDim.new(0, 4)"),
+        r("TopRightRadius", "UDim.new(0, 4)"),
+      ]),
+      undefined
+    );
+  });
+
+  test("expand: lone CornerRadius → individual radii", () => {
+    const plan = planUICornerRefactor([r("CornerRadius", "UDim.new(0, 8)")]);
+    assert.deepStrictEqual(plan, { kind: "expand", value: "UDim.new(0, 8)" });
+  });
+
+  test("conflict (both forms present) → no refactor offered", () => {
+    // The diagnostic handles the conflict; neither collapse nor expand
+    // makes sense, so the lightbulb stays quiet.
+    const plan = planUICornerRefactor([
+      r("CornerRadius", "UDim.new(0, 4)"),
+      ...FOUR_EQUAL,
+    ]);
+    assert.strictEqual(plan, undefined);
+  });
+
+  test("no collapse when an extra non-corner prop is present", () => {
+    // entries.length must be exactly 4 so the collapse span is
+    // unambiguous (UICorner carries no other props in practice).
+    const plan = planUICornerRefactor([...FOUR_EQUAL, r("Name", '"x"')]);
+    assert.strictEqual(plan, undefined);
+  });
+
+  test("no refactor for an empty value", () => {
+    assert.strictEqual(
+      planUICornerRefactor([r("CornerRadius", "")]),
+      undefined
+    );
+  });
+});
+
+// ============================================================================
+// 1.5.1 — UIShadow class support
+// ============================================================================
+
+suite("UIShadow class support (1.5.1)", () => {
+  const { getPropType, DIRECT_INSTANTIABLE_CLASS_NAMES, defaultPropsMap } =
+    require("../data");
+
+  test("UIShadow exposes its own props (plus Instance's Name/Archivable)", () => {
+    const props = _testing.flattenClassProps("UIShadow");
+    for (const p of [
+      "BlurRadius",
+      "Color",
+      "Offset",
+      "Spread",
+      "Transparency",
+      "ZIndex",
+      "Enabled",
+    ]) {
+      assert.ok(props.includes(p), `UIShadow missing prop ${p}`);
+    }
+    // Inherited from Instance.
+    assert.ok(props.includes("Name"));
+    assert.ok(props.includes("Archivable"));
+  });
+
+  test("UIShadow prop types resolve correctly (incl. the Offset override)", () => {
+    // Offset is globally Vector2 — on UIShadow it must be UDim2.
+    assert.strictEqual(getPropType("UIShadow", "Offset"), "UDim2");
+    assert.strictEqual(getPropType("UIShadow", "Spread"), "UDim2");
+    assert.strictEqual(getPropType("UIShadow", "BlurRadius"), "UDim");
+    assert.strictEqual(getPropType("UIShadow", "Color"), "Color3");
+    assert.strictEqual(getPropType("UIShadow", "Transparency"), "number");
+    // These resolve from the global PROP_TYPES (no override needed).
+    assert.strictEqual(getPropType("UIShadow", "ZIndex"), "number");
+    assert.strictEqual(getPropType("UIShadow", "Enabled"), "boolean");
+  });
+
+  test("a plain Vector2 Offset elsewhere is unaffected by the override", () => {
+    // UIGradient.Offset is Vector2 — make sure the UIShadow override
+    // didn't leak across classes.
+    assert.strictEqual(getPropType("UIGradient", "Offset"), "Vector2");
+  });
+
+  test("UIShadow is in the validation set (so its props aren't 'unknown')", () => {
+    assert.ok(Array.isArray(defaultPropsMap["UIShadow"]));
+    assert.ok(defaultPropsMap["UIShadow"].includes("BlurRadius"));
+  });
+
+  test("UIShadow is directly instantiable (Vide `UIShadow({ … })`)", () => {
+    const set: ReadonlySet<string> = DIRECT_INSTANTIABLE_CLASS_NAMES;
+    assert.ok(set.has("UIShadow"));
+  });
+});
+
+// ============================================================================
+// 1.5.1 — Font deprecation broadened to all value forms
+// ============================================================================
+
+import { extractDeprecatedFontEnum } from "../codeActions";
+
+suite("Font deprecation auto-fix gating — extractDeprecatedFontEnum (1.5.1)", () => {
+  test("extracts the enum name from the Enum.Font.X form", () => {
+    assert.strictEqual(
+      extractDeprecatedFontEnum("Font = Enum.Font.GothamBold"),
+      "GothamBold"
+    );
+    assert.strictEqual(
+      extractDeprecatedFontEnum("Font  =  Enum.Font.SourceSans"),
+      "SourceSans"
+    );
+  });
+
+  test("returns undefined for the string form (no value-destroying fix)", () => {
+    // `Font = "Gotham"` still WARNS (deprecated), but offers no
+    // auto-convert — we won't silently swap the value for a default.
+    assert.strictEqual(extractDeprecatedFontEnum('Font = "Gotham"'), undefined);
+  });
+
+  test("returns undefined for a variable / non-literal value", () => {
+    assert.strictEqual(
+      extractDeprecatedFontEnum("Font = UIConf.BoldFont"),
+      undefined
+    );
+  });
+
+  test("Font is still a deprecated-valid prop on text classes (warns, not 'unknown')", () => {
+    // The broadened warning relies on this: any `Font` on a text class
+    // is flagged deprecated, never 'unknown property'.
+    const { isDeprecatedValidProp } = require("../data");
+    assert.strictEqual(isDeprecatedValidProp("TextLabel", "Font"), true);
+    assert.strictEqual(isDeprecatedValidProp("Frame", "Font"), false);
+  });
+});
+
+suite("UIShadow element snippets (1.5.1)", () => {
+  const SNIPPETS = snippetsInternal.SNIPPETS;
+  test("all four frameworks have a UIShadow element snippet", () => {
+    const expected: Record<string, string> = {
+      eUIShadow: "react",
+      nUIShadow: "fusion",
+      cUIShadow: "vide",
+      rUIShadow: "roact",
+    };
+    for (const [prefix, fw] of Object.entries(expected)) {
+      const snip = SNIPPETS.find((s) => s.prefix === prefix);
+      assert.ok(snip, `missing ${prefix}`);
+      assert.strictEqual(snip!.kind, "element");
+      assert.strictEqual(snip!.framework, fw);
+      // Body should construct a UIShadow with the offset/blur props.
+      const body = snip!.body.join("\n");
+      assert.ok(body.includes("UIShadow"));
+      assert.ok(body.includes("BlurRadius"));
+    }
+  });
+});
+
+// ============================================================================
+// 1.5.1 — UICorner hover preview with individual radii
+// ============================================================================
+
+import { cornerRadiiFromProps, roundedRectPath } from "../hoverPreviews";
+
+suite("UICorner preview corner resolution — cornerRadiiFromProps (1.5.1)", () => {
+  const m = (entries: [string, string][]) => new Map(entries);
+
+  test("CornerRadius sets all four corners uniformly", () => {
+    const r = cornerRadiiFromProps(m([["CornerRadius", "UDim.new(0, 12)"]]));
+    assert.deepStrictEqual(r, {
+      tl: 12,
+      tr: 12,
+      br: 12,
+      bl: 12,
+      fromCornerRadius: true,
+    });
+  });
+
+  test("individual radii map to their own corners", () => {
+    const r = cornerRadiiFromProps(
+      m([
+        ["TopLeftRadius", "UDim.new(0, 4)"],
+        ["TopRightRadius", "UDim.new(0, 8)"],
+        ["BottomRightRadius", "UDim.new(0, 16)"],
+        ["BottomLeftRadius", "UDim.new(0, 2)"],
+      ])
+    );
+    assert.deepStrictEqual(r, {
+      tl: 4,
+      tr: 8,
+      br: 16,
+      bl: 2,
+      fromCornerRadius: false,
+    });
+  });
+
+  test("CornerRadius overrides individual radii (matches runtime)", () => {
+    const r = cornerRadiiFromProps(
+      m([
+        ["CornerRadius", "UDim.new(0, 10)"],
+        ["TopLeftRadius", "UDim.new(0, 99)"],
+      ])
+    );
+    assert.strictEqual(r.tl, 10);
+    assert.strictEqual(r.fromCornerRadius, true);
+  });
+
+  test("missing radii default to 0 (sharp corners)", () => {
+    const r = cornerRadiiFromProps(m([["TopLeftRadius", "UDim.new(0, 6)"]]));
+    assert.deepStrictEqual(r, {
+      tl: 6,
+      tr: 0,
+      br: 0,
+      bl: 0,
+      fromCornerRadius: false,
+    });
+  });
+});
+
+suite("UICorner preview path — roundedRectPath (1.5.1)", () => {
+  test("emits an arc for each non-zero corner, none for zero", () => {
+    // Only TL + BR rounded → exactly two arc commands.
+    const path = roundedRectPath(0, 0, 100, 60, 8, 0, 8, 0);
+    const arcs = (path.match(/A /g) ?? []).length;
+    assert.strictEqual(arcs, 2);
+  });
+
+  test("a fully sharp rect has no arcs", () => {
+    const path = roundedRectPath(0, 0, 100, 60, 0, 0, 0, 0);
+    assert.ok(!path.includes("A "));
+    assert.ok(path.startsWith("M ") && path.trim().endsWith("Z"));
+  });
+
+  test("all four rounded → four arcs", () => {
+    const path = roundedRectPath(0, 0, 100, 60, 5, 5, 5, 5);
+    assert.strictEqual((path.match(/A /g) ?? []).length, 4);
+  });
+});

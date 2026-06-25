@@ -13,6 +13,7 @@ import {
 } from "./completion";
 import { WorkspaceIndex } from "./workspaceIndex";
 import { detectFrameworkForDocument } from "./activeFramework";
+import { getConfig } from "./configCompat";
 
 // ============================================================================
 // Luix snippets — context-aware completion items
@@ -242,6 +243,21 @@ const SNIPPETS: LuixSnippet[] = [
       "})",
     ],
   },
+  {
+    prefix: "eUIShadow",
+    kind: "element",
+    framework: "react",
+    description: "UIShadow",
+    body: [
+      'e("UIShadow", {',
+      "\tColor = Color3.fromRGB(${1:0}, ${2:0}, ${3:0}),",
+      "\tOffset = UDim2.fromOffset(${4:0}, ${5:4}),",
+      "\tBlurRadius = UDim.new(0, ${6:8}),",
+      "\tTransparency = ${7:0.5},",
+      "\t$0",
+      "})",
+    ],
+  },
 
   // ---- Fusion (curried form, table-key children) ----
   {
@@ -464,6 +480,21 @@ const SNIPPETS: LuixSnippet[] = [
       "}",
     ],
   },
+  {
+    prefix: "nUIShadow",
+    kind: "element",
+    framework: "fusion",
+    description: "Fusion UIShadow",
+    body: [
+      'New "UIShadow" {',
+      "\tColor = Color3.fromRGB(${1:0}, ${2:0}, ${3:0}),",
+      "\tOffset = UDim2.fromOffset(${4:0}, ${5:4}),",
+      "\tBlurRadius = UDim.new(0, ${6:8}),",
+      "\tTransparency = ${7:0.5},",
+      "\t$0",
+      "}",
+    ],
+  },
 
   // ---- Vide — remaining element types to match React's 11-set ----
   {
@@ -582,6 +613,21 @@ const SNIPPETS: LuixSnippet[] = [
       "\tColor = Color3.fromRGB(${1:255}, ${2:255}, ${3:255}),",
       "\tThickness = ${4:1},",
       "\tApplyStrokeMode = Enum.ApplyStrokeMode.Contextual,",
+      "\t$0",
+      "}",
+    ],
+  },
+  {
+    prefix: "cUIShadow",
+    kind: "element",
+    framework: "vide",
+    description: "Vide UIShadow",
+    body: [
+      'create "UIShadow" {',
+      "\tColor = Color3.fromRGB(${1:0}, ${2:0}, ${3:0}),",
+      "\tOffset = UDim2.fromOffset(${4:0}, ${5:4}),",
+      "\tBlurRadius = UDim.new(0, ${6:8}),",
+      "\tTransparency = ${7:0.5},",
       "\t$0",
       "}",
     ],
@@ -756,6 +802,21 @@ const SNIPPETS: LuixSnippet[] = [
       "\tColor = Color3.fromRGB(${1:255}, ${2:255}, ${3:255}),",
       "\tThickness = ${4:1},",
       "\tApplyStrokeMode = Enum.ApplyStrokeMode.Contextual,",
+      "\t$0",
+      "})",
+    ],
+  },
+  {
+    prefix: "rUIShadow",
+    kind: "element",
+    framework: "roact",
+    description: "Roact UIShadow",
+    body: [
+      'Roact.createElement("UIShadow", {',
+      "\tColor = Color3.fromRGB(${1:0}, ${2:0}, ${3:0}),",
+      "\tOffset = UDim2.fromOffset(${4:0}, ${5:4}),",
+      "\tBlurRadius = UDim.new(0, ${6:8}),",
+      "\tTransparency = ${7:0.5},",
       "\t$0",
       "})",
     ],
@@ -1138,6 +1199,13 @@ export class ElementSnippetCompletionProvider
     document: vscode.TextDocument,
     position: vscode.Position
   ): Promise<vscode.CompletionItem[] | undefined> {
+    // (0) Master toggle — `luix.snippets.enabled` (default true) turns
+    // off every Luix dynamic snippet (element / hook / scaffold / event
+    // / state / expr) for users who want a quieter completion list. The
+    // workspace-component completions (a separate provider) are
+    // unaffected.
+    if (!getConfig<boolean>("snippets.enabled", true)) return undefined;
+
     const text = document.getText();
     const offset = document.offsetAt(position);
 
@@ -1322,7 +1390,13 @@ export class ElementSnippetCompletionProvider
           // `Hooks.new(Roact)` factory) — surfacing `React.useState`
           // for them would be wrong. A Roact user can still hand-roll
           // the call.
-          allowed = active === "react" && inStatementSlot;
+          //
+          // Also independently disable-able via `luix.snippets.hooks`
+          // for users who don't want the hook entries in their list.
+          allowed =
+            active === "react" &&
+            inStatementSlot &&
+            getConfig<boolean>("snippets.hooks", true);
           break;
         case "event":
           // Per-framework event-shorthand entries (reactEvent /
@@ -1358,10 +1432,15 @@ export class ElementSnippetCompletionProvider
           // surface for the matching framework. Bodies are `local x
           // = Value(…)` / `effect(function() … end)` style, which
           // are statement-position constructs — never a props key.
+          //
+          // Independently disable-able via `luix.snippets.state` — the
+          // cross-framework parallel to `luix.snippets.hooks` (React's
+          // hooks are this category's equivalent).
           allowed =
             !!snip.framework &&
             snip.framework === active &&
-            inStatementSlot;
+            inStatementSlot &&
+            getConfig<boolean>("snippets.state", true);
           break;
         }
         case "computed":

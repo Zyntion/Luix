@@ -1,5 +1,11 @@
 import * as vscode from "vscode";
-import { getPropType, defaultPropsMap, flattenClassProps } from "./data";
+import {
+  getPropType,
+  defaultPropsMap,
+  flattenClassProps,
+  isDeprecatedValidProp,
+  cornerRadiusConflicts,
+} from "./data";
 import {
   AliasPartition,
   applyMask,
@@ -18,6 +24,7 @@ import { getAutoImportConfig } from "./config";
 import { configChangeAffects, getConfig } from "./configCompat";
 import { getAliasPartition } from "./frameworks";
 import { WorkspaceIndex } from "./workspaceIndex";
+import { planUICornerRefactor } from "./uiCorner";
 
 export const DIAGNOSTIC_CODE = {
   ReservedName: "luix.reserved-name",
@@ -34,6 +41,8 @@ export const DIAGNOSTIC_CODE = {
   TextScaledGotcha: "luix.text-scaled-gotcha",
   LowContrast: "luix.low-contrast",
   UnusedProp: "luix.unused-prop",
+  CornerRadiusConflict: "luix.corner-radius-conflict",
+  CornerRadiusCollapsible: "luix.corner-radius-collapsible",
 } as const;
 
 export class DiagnosticsManager implements vscode.Disposable {
@@ -297,26 +306,46 @@ function computeDeprecationDiagnostics(
   const propsRanges = collectPropsRanges(text, aliases);
   const inProps = (offset: number) => containedIn(propsRanges, offset);
 
-  // `Font = Enum.Font.X` inside a createElement props table.
-  const fontRe = /\bFont\s*=\s*Enum\.Font\.([A-Za-z_]\w*)/g;
-  let m: RegExpExecArray | null;
-  while ((m = fontRe.exec(masked)) !== null) {
-    if (!inProps(m.index)) {
+  // `Font` is deprecated in favour of `FontFace` — flag ANY assignment
+  // to it (`Font = Enum.Font.X`, `Font = "Gotham"`, `Font = someVar`),
+  // not just the enum-literal form. Scoped to classes that actually
+  // HAVE a `Font` property (the text family) via `isDeprecatedValidProp`
+  // — on other classes `Font` is genuinely unknown and the prop
+  // validator handles it. The quick-fix only offers the auto-convert for
+  // the `Enum.Font.X` form (see `DeprecationCodeActionProvider`).
+  for (const call of findAllCreateElementCalls(text, aliases)) {
+    if (
+      !call.isStringLiteralName ||
+      call.propsBraceStart === undefined ||
+      call.propsBraceEnd === undefined ||
+      !isDeprecatedValidProp(call.className, "Font")
+    ) {
       continue;
     }
-    const range = new vscode.Range(
-      document.positionAt(m.index),
-      document.positionAt(m.index + m[0].length)
+    const bodyStart = call.propsBraceStart + 1;
+    const entries = extractPropEntriesFromDocument(
+      text,
+      bodyStart,
+      call.propsBraceEnd
     );
-    const d = new vscode.Diagnostic(
-      range,
-      "`Font` is deprecated; prefer `FontFace` with `Font.fromName(...)`.",
-      vscode.DiagnosticSeverity.Information
-    );
-    d.code = DIAGNOSTIC_CODE.DeprecatedFont;
-    d.source = "luix";
-    d.tags = [vscode.DiagnosticTag.Deprecated];
-    out.push(d);
+    for (const entry of entries) {
+      if (entry.key !== "Font") {
+        continue;
+      }
+      const range = new vscode.Range(
+        document.positionAt(bodyStart + entry.keyStart),
+        document.positionAt(bodyStart + entry.valueEnd)
+      );
+      const d = new vscode.Diagnostic(
+        range,
+        "`Font` is deprecated; prefer `FontFace` (`Font.fromName(...)`).",
+        vscode.DiagnosticSeverity.Information
+      );
+      d.code = DIAGNOSTIC_CODE.DeprecatedFont;
+      d.source = "luix";
+      d.tags = [vscode.DiagnosticTag.Deprecated];
+      out.push(d);
+    }
   }
 
   // `TextColor = ...` (missing the trailing `3`) inside a props table.
@@ -458,6 +487,65 @@ function computePropValidationDiagnostics(
       }
     }
 
+    // ---- UICorner: CornerRadius vs individual corner radii ----
+    // `CornerRadius` sets all four corners and overrides the individual
+    // `BottomLeftRadius` / … properties, so setting both is a mistake —
+    // the individual ones silently do nothing. Flag each dead one.
+    if (call.isStringLiteralName && call.className === "UICorner") {
+      const overridden = new Set(
+        cornerRadiusConflicts(entries.map((e) => e.key))
+      );
+      if (overridden.size > 0) {
+        for (const entry of entries) {
+          if (!overridden.has(entry.key)) {
+            continue;
+          }
+          const start = document.positionAt(bodyStart + entry.keyStart);
+          const end = document.positionAt(bodyStart + entry.keyEnd);
+          const d = new vscode.Diagnostic(
+            new vscode.Range(start, end),
+            `\`${entry.key}\` has no effect — \`CornerRadius\` overrides all four corners on \`UICorner\`. Use either \`CornerRadius\` or the individual corner radii, not both.`,
+            vscode.DiagnosticSeverity.Warning
+          );
+          d.code = DIAGNOSTIC_CODE.CornerRadiusConflict;
+          d.source = "luix";
+          out.push(d);
+        }
+      } else {
+        // No conflict — if all four individual radii are equal (and
+        // there's no CornerRadius), suggest collapsing them into one
+        // `CornerRadius`, the way the AnchorPoint hint nudges a fix. The
+        // quick-fix (in DeprecationCodeActionProvider) reads the stashed
+        // value and replaces this range.
+        const plan = planUICornerRefactor(
+          entries.map((e) => ({
+            key: e.key,
+            valueText: propsBody.slice(e.valueStart, e.valueEnd),
+          }))
+        );
+        if (plan?.kind === "collapse") {
+          const spanStart =
+            bodyStart + Math.min(...entries.map((e) => e.keyStart));
+          const spanEnd =
+            bodyStart + Math.max(...entries.map((e) => e.valueEnd));
+          const d = new vscode.Diagnostic(
+            new vscode.Range(
+              document.positionAt(spanStart),
+              document.positionAt(spanEnd)
+            ),
+            "All four corner radii are equal — collapse to a single `CornerRadius`?",
+            vscode.DiagnosticSeverity.Information
+          );
+          d.code = DIAGNOSTIC_CODE.CornerRadiusCollapsible;
+          d.source = "luix";
+          (d as vscode.Diagnostic & { _luixData?: unknown })._luixData = {
+            value: plan.value,
+          };
+          out.push(d);
+        }
+      }
+    }
+
     // ---- Unknown / wrong-enum (Roblox host class only) ----
     if (call.isStringLiteralName && defaultPropsMap[call.className]) {
       const known = new Set(flattenClassProps(call.className));
@@ -489,6 +577,14 @@ function computePropValidationDiagnostics(
         }
         // Unknown — but skip framework-special keys.
         if (isFrameworkSpecialKey(entry.key)) {
+          continue;
+        }
+        // Skip deprecated-but-valid props (e.g. `Font` on text classes).
+        // They're real properties kept out of the suggestion list to
+        // nudge `FontFace`, but the code is valid — flagging them
+        // "Unknown property" is a false positive (issue #2). The
+        // separate deprecation diagnostic handles the migration hint.
+        if (isDeprecatedValidProp(call.className, entry.key)) {
           continue;
         }
         const suggestion = closestMatch(entry.key, known);
