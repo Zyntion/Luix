@@ -852,11 +852,16 @@ modes, toggled via the title-bar button:
   organized on disk. Click an entry to jump to the function definition.
 - **Flat**: alphabetical list of every component.
 
-Only functions Luix is confident are UI components show up here — i.e.
-those that either return an `e("…", …)` / `New "…" { … }` /
-`create "…" { … }` element at the top level, **or** carry an explicit
-`---@extends ClassName` annotation. Helper functions that happen to
-take a `props` parameter are skipped.
+The browser follows each module's exported value rather than listing
+every function in the file. Direct factory components are included, as
+are Vide components that return an imported primitive, another proven
+component, `Vide.show` / `Vide.switch` / `Vide.indexes` children, or a
+table of UI children. Typed props and Luix annotations improve the
+metadata shown by the extension, but neither is required for discovery.
+
+Story files and private helper functions are skipped. Rojo folder modules
+backed by `init.lua` / `init.luau` appear once under the folder's name
+instead of as a duplicate component named `init`.
 
 Optionally pin the tree to a subfolder via `luix.componentsRoot`:
 

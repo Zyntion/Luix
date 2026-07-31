@@ -1,7 +1,9 @@
 import * as vscode from "vscode";
-import { WorkspaceIndex } from "./workspaceIndex";
+import {
+  WorkspaceComponentEntry,
+  WorkspaceIndex,
+} from "./workspaceIndex";
 import { detectWorkspaceCapabilities } from "./wally";
-import { DocumentComponentInfo } from "./parser";
 import { configChangeAffects, getConfig } from "./configCompat";
 import { getCacheStats } from "./assetThumbnails";
 import { WorkspaceValidation } from "./workspaceValidation";
@@ -235,11 +237,7 @@ class WorkspaceTreeItem extends vscode.TreeItem {
 
 type ViewMode = "tree" | "flat";
 
-interface ComponentEntry {
-  name: string;
-  uri: vscode.Uri;
-  info: DocumentComponentInfo;
-}
+type ComponentEntry = WorkspaceComponentEntry;
 
 type TreeNode =
   | {
@@ -247,6 +245,7 @@ type TreeNode =
       label: string;
       relPath: string;
       children: TreeNode[];
+      entry?: ComponentEntry;
     }
   | {
       kind: "component";
@@ -303,9 +302,24 @@ export class ComponentsTreeProvider
         element.label,
         vscode.TreeItemCollapsibleState.Expanded
       );
-      item.iconPath = new vscode.ThemeIcon("folder");
-      item.contextValue = "luix.folder";
-      item.tooltip = element.relPath || element.label;
+      if (element.entry) {
+        const entry = element.entry;
+        const base =
+          entry.info.annotations.extendsClass ?? entry.info.detectedBase;
+        item.iconPath = new vscode.ThemeIcon("symbol-method");
+        item.contextValue = "luix.componentFolder";
+        item.description = "component";
+        item.tooltip = new vscode.MarkdownString(
+          base
+            ? `**${entry.name}**\n\nExtends \`${base}\``
+            : `**${entry.name}**\n\nReturns UI children`
+        );
+        item.command = componentOpenCommand(entry);
+      } else {
+        item.iconPath = new vscode.ThemeIcon("folder");
+        item.contextValue = "luix.folder";
+        item.tooltip = element.relPath || element.label;
+      }
       return item;
     }
     const c = element.entry;
@@ -320,19 +334,7 @@ export class ComponentsTreeProvider
       base ? `**${c.name}**\n\nExtends \`${base}\`` : `**${c.name}**`
     );
     item.iconPath = new vscode.ThemeIcon("symbol-method");
-    item.command = {
-      command: "vscode.open",
-      title: "Open component",
-      arguments: [
-        c.uri,
-        {
-          selection: new vscode.Range(
-            new vscode.Position(c.info.defLineIndex, 0),
-            new vscode.Position(c.info.defLineIndex, 0)
-          ),
-        },
-      ],
-    };
+    item.command = componentOpenCommand(c);
     return item;
   }
 
@@ -366,6 +368,22 @@ export class ComponentsTreeProvider
 
 type ComponentNode = TreeNode;
 
+function componentOpenCommand(entry: ComponentEntry): vscode.Command {
+  return {
+    command: "vscode.open",
+    title: "Open component",
+    arguments: [
+      entry.uri,
+      {
+        selection: new vscode.Range(
+          new vscode.Position(entry.info.defLineIndex, 0),
+          new vscode.Position(entry.info.defLineIndex, 0)
+        ),
+      },
+    ],
+  };
+}
+
 function getComponentsRoot(): string | undefined {
   const setting = getConfig<string>("componentsRoot", "");
   return setting && setting.length > 0 ? setting : undefined;
@@ -380,7 +398,13 @@ function getComponentsRoot(): string | undefined {
 export function buildFolderTree(
   components: ComponentEntry[],
   componentsRoot: string | undefined
-): { kind: "folder"; label: string; relPath: string; children: TreeNode[] } {
+): {
+  kind: "folder";
+  label: string;
+  relPath: string;
+  children: TreeNode[];
+  entry?: ComponentEntry;
+} {
   const path = require("path") as typeof import("path");
 
   // Determine the base each component path is relative to: the workspace
@@ -426,7 +450,13 @@ export function buildFolderTree(
       let next = cursor.children.find(
         (c) => c.kind === "folder" && c.label === dir
       ) as
-        | { kind: "folder"; label: string; relPath: string; children: TreeNode[] }
+        | {
+            kind: "folder";
+            label: string;
+            relPath: string;
+            children: TreeNode[];
+            entry?: ComponentEntry;
+          }
         | undefined;
       if (!next) {
         next = {
@@ -441,7 +471,11 @@ export function buildFolderTree(
       }
       cursor = next;
     }
-    cursor.children.push({ kind: "component", entry });
+    if (entry.isFolderModule && dirs.length > 0) {
+      cursor.entry = entry;
+    } else {
+      cursor.children.push({ kind: "component", entry });
+    }
   }
 
   // Sort: folders first (alphabetical), then components (alphabetical).

@@ -849,6 +849,7 @@ export {
   extractTypeFields,
   parseAnnotationsForComponent,
   scanDocument,
+  scanModuleDocument,
   detectReturnedClass,
   findAllCreateElementCalls,
   buildCallTree,

@@ -2,11 +2,18 @@ import * as vscode from "vscode";
 import { configChangeAffects, getConfig } from "./configCompat";
 import { getAliasPartition, getDirectInstanceClassNames } from "./frameworks";
 import {
+  ComponentReturnInfo,
   CreateElementCall,
+  DocumentModuleInfo,
   findAllCreateElementCalls,
-  scanDocument,
+  scanModuleDocument,
   DocumentComponentInfo,
 } from "./parser";
+import {
+  discoverComponents,
+  DiscoveredComponent,
+  IndexedModuleFile,
+} from "./componentDiscovery";
 
 /**
  * Directories Luix always skips when indexing the workspace. These are
@@ -55,28 +62,6 @@ function buildExcludeGlob(excludedDirs: string[]): string {
 }
 
 /**
- * Conservative check for whether a `DocumentComponentInfo` describes
- * something that's actually a UI component (vs. a utility function the
- * parser also picked up). At least one strong signal must be present:
- *
- *   - The function returns an element call (`detectedBase` set), OR
- *   - It carries an explicit `---@extends ClassName` annotation.
- *
- * The annotated-but-no-extends case (e.g. only `---@prop name type`
- * lines) is intentionally excluded — that pattern shows up on
- * non-component helpers too.
- */
-function looksLikeComponent(info: DocumentComponentInfo): boolean {
-  if (info.detectedBase) {
-    return true;
-  }
-  if (info.annotations.extendsClass) {
-    return true;
-  }
-  return false;
-}
-
-/**
  * Workspace-wide component index. Scans every `.lua`/`.luau` file in the
  * project once, then keeps itself fresh via the file-system watcher and the
  * onDidChangeTextDocument event (so unsaved buffers are reflected).
@@ -91,6 +76,7 @@ function looksLikeComponent(info: DocumentComponentInfo): boolean {
  */
 interface CacheEntry {
   components: Map<string, DocumentComponentInfo>;
+  module: DocumentModuleInfo;
   /** Every component call site in the file, keyed by the last segment
    *  of the called name (`Components.Button` → `Button`). Used by the
    *  "N references" CodeLens. */
@@ -98,6 +84,16 @@ interface CacheEntry {
   /** mtime + size fingerprint used by the on-disk cache to decide
    *  whether a file needs re-parsing on cold start. */
   fingerprint?: { mtime: number; size: number };
+}
+
+export interface WorkspaceComponentEntry {
+  name: string;
+  uri: vscode.Uri;
+  info: DocumentComponentInfo;
+  /** `true` for a Rojo folder module backed by `init.lua(u)`. */
+  isFolderModule: boolean;
+  /** Workspace-relative module path, without extension or `/init`. */
+  modulePath: string;
 }
 
 export class WorkspaceIndex implements vscode.Disposable {
@@ -118,6 +114,8 @@ export class WorkspaceIndex implements vscode.Disposable {
    * cache or the gating config changes.
    */
   private _componentNamesCache: Set<string> | undefined;
+  /** Export-aware, dependency-resolved production components. */
+  private _resolvedComponentsCache: DiscoveredComponent[] | undefined;
   /** Memoised union of workspace components + Vide instance class
    *  names (when the setting is on). Same invalidation rules. */
   private _directCallTargetsCache: Set<string> | undefined;
@@ -142,6 +140,7 @@ export class WorkspaceIndex implements vscode.Disposable {
   private invalidateNameCaches(): void {
     this._componentNamesCache = undefined;
     this._directCallTargetsCache = undefined;
+    this._resolvedComponentsCache = undefined;
   }
 
   constructor(context?: vscode.ExtensionContext) {
@@ -227,6 +226,13 @@ export class WorkspaceIndex implements vscode.Disposable {
       "**/*.{lua,luau}",
       excludeGlob || null
     );
+    const currentUris = new Set(files.map((uri) => uri.toString()));
+    for (const uriString of this.cache.keys()) {
+      if (!currentUris.has(uriString)) {
+        this.cache.delete(uriString);
+      }
+    }
+    this.invalidateNameCaches();
     await Promise.all(
       files.map((uri) => this.scanUri(uri).catch(() => undefined))
     );
@@ -275,7 +281,8 @@ export class WorkspaceIndex implements vscode.Disposable {
   private scanDocument(doc: vscode.TextDocument): void {
     const aliases = getAliasPartition();
     const text = doc.getText();
-    const components = scanDocument(text, aliases);
+    const scan = scanModuleDocument(text, aliases);
+    const components = scan.components;
     const callSites = new Map<string, CreateElementCall[]>();
     for (const call of findAllCreateElementCalls(text, aliases)) {
       if (call.isStringLiteralName) {
@@ -294,6 +301,7 @@ export class WorkspaceIndex implements vscode.Disposable {
     const existing = this.cache.get(doc.uri.toString());
     this.cache.set(doc.uri.toString(), {
       components,
+      module: scan.module,
       callSites,
       fingerprint: existing?.fingerprint,
     });
@@ -347,7 +355,10 @@ export class WorkspaceIndex implements vscode.Disposable {
     }
     try {
       const data = JSON.parse(new TextDecoder().decode(bytes)) as PersistedCache;
-      if (data.version !== PERSIST_VERSION) {
+      if (
+        data.version !== PERSIST_VERSION ||
+        data.parserSignature !== getParserSignature()
+      ) {
         return;
       }
       for (const [uriStr, entry] of Object.entries(data.files)) {
@@ -359,31 +370,56 @@ export class WorkspaceIndex implements vscode.Disposable {
   }
 
   /**
-   * Returns every component currently in the index, alphabetised by
-   * name. Only functions that actually look like UI components are
-   * included — see `looksLikeComponent` for the rule. Helper functions
-   * that happen to take a `props` parameter but never return an element
-   * are filtered out.
+   * Resolve exported component modules as a dependency graph. Direct factory
+   * returns seed the graph; wrappers qualify only when their returned binding
+   * resolves to another proven component.
    */
-  async getAllComponents(): Promise<
-    Array<{ name: string; uri: vscode.Uri; info: DocumentComponentInfo }>
-  > {
-    await this.warmupPromise;
-    const out: Array<{
-      name: string;
-      uri: vscode.Uri;
-      info: DocumentComponentInfo;
-    }> = [];
-    for (const [uriString, entry] of this.cache) {
-      for (const [name, info] of entry.components) {
-        if (!looksLikeComponent(info)) {
-          continue;
-        }
-        out.push({ name, uri: vscode.Uri.parse(uriString), info });
-      }
+  private resolvedComponents(): DiscoveredComponent[] {
+    if (this._resolvedComponentsCache) {
+      return this._resolvedComponentsCache;
     }
-    out.sort((a, b) => a.name.localeCompare(b.name));
-    return out;
+
+    const path = require("path") as typeof import("path");
+    const files: IndexedModuleFile[] = [];
+    for (const [uriString, entry] of this.cache) {
+      let uri: vscode.Uri;
+      try {
+        uri = vscode.Uri.parse(uriString);
+      } catch {
+        continue;
+      }
+      const workspaceFolder = vscode.workspace.getWorkspaceFolder(uri);
+      if (!workspaceFolder) continue;
+      files.push({
+        uriString,
+        workspaceKey: workspaceFolder.uri.toString(),
+        relativeFile: path.relative(
+          workspaceFolder.uri.fsPath,
+          uri.fsPath
+        ),
+        components: entry.components,
+        module: entry.module,
+      });
+    }
+
+    this._resolvedComponentsCache = discoverComponents(files);
+    return this._resolvedComponentsCache;
+  }
+
+  /**
+   * Returns every component currently in the index, alphabetised by
+   * name. Only the exported UI value from a production module is included.
+   * Private helpers and Storybook mount functions are deliberately omitted.
+   */
+  async getAllComponents(): Promise<WorkspaceComponentEntry[]> {
+    await this.warmupPromise;
+    return this.resolvedComponents().map((component) => ({
+      name: component.name,
+      uri: vscode.Uri.parse(component.uriString),
+      info: component.info,
+      isFolderModule: component.isFolderModule,
+      modulePath: component.modulePath,
+    }));
   }
 
   /**
@@ -397,13 +433,16 @@ export class WorkspaceIndex implements vscode.Disposable {
     excludeUri?: string
   ): Promise<DocumentComponentInfo | undefined> {
     await this.warmupPromise;
-    for (const [uriString, entry] of this.cache) {
-      if (uriString === excludeUri) {
+    const lastSegment = componentName.split(".").pop() ?? componentName;
+    for (const component of this.resolvedComponents()) {
+      if (component.uriString === excludeUri) {
         continue;
       }
-      const found = entry.components.get(componentName);
-      if (found) {
-        return found;
+      if (
+        component.name === lastSegment ||
+        component.info.name === lastSegment
+      ) {
+        return component.info;
       }
     }
     return undefined;
@@ -419,13 +458,18 @@ export class WorkspaceIndex implements vscode.Disposable {
   ): Promise<{ uri: vscode.Uri; info: DocumentComponentInfo } | undefined> {
     await this.warmupPromise;
     const lastSegment = componentName.split(".").pop() ?? componentName;
-    for (const [uriString, entry] of this.cache) {
-      if (uriString === excludeUri) {
+    for (const component of this.resolvedComponents()) {
+      if (component.uriString === excludeUri) {
         continue;
       }
-      const found = entry.components.get(lastSegment);
-      if (found) {
-        return { uri: vscode.Uri.parse(uriString), info: found };
+      if (
+        component.name === lastSegment ||
+        component.info.name === lastSegment
+      ) {
+        return {
+          uri: vscode.Uri.parse(component.uriString),
+          info: component.info,
+        };
       }
     }
     return undefined;
@@ -467,21 +511,11 @@ export class WorkspaceIndex implements vscode.Disposable {
       return this._componentNamesCache;
     }
     const out = new Set<string>();
-    for (const entry of this.cache.values()) {
-      for (const [name, info] of entry.components) {
-        // `entry.components` indexes *every* function definition the
-        // parser finds — including ordinary helpers like
-        // `ProductRegistry.GetGamepassProduct`. Only the ones that
-        // look like UI components (return an element call, or carry
-        // an explicit `@extends ClassName` annotation) should surface
-        // as workspace-component completion targets. Without this
-        // filter, typing `Pro` in a server script would surface every
-        // workspace function whose name starts with `Pro` as a
-        // "Luix component".
-        if (looksLikeComponent(info)) {
-          out.add(name);
-        }
-      }
+    for (const component of this.resolvedComponents()) {
+      const name = component.name;
+      const info = component.info;
+      out.add(name);
+      if (info.name) out.add(info.name);
     }
     this._componentNamesCache = out;
     return out;
@@ -579,8 +613,15 @@ export class WorkspaceIndex implements vscode.Disposable {
     entries: Array<[string, Map<string, DocumentComponentInfo>]>
   ): void {
     for (const [uriString, components] of entries) {
+      const exportedName = components.keys().next().value as
+        | string
+        | undefined;
       this.cache.set(uriString, {
         components,
+        module: {
+          exportedName,
+          requireBindings: new Map(),
+        },
         callSites: new Map(),
       });
     }
@@ -629,16 +670,23 @@ export const _internal = {
 // serialised structure changes; older caches are silently discarded on
 // load.
 
-const PERSIST_VERSION = 1;
+const PERSIST_VERSION = 2;
 
 interface PersistedCache {
   version: number;
+  parserSignature: string;
   files: Record<string, PersistedFileEntry>;
 }
 interface PersistedFileEntry {
   fingerprint?: { mtime: number; size: number };
   components: Array<[string, PersistedComponentInfo]>;
+  module: PersistedModuleInfo;
   callSites: Array<[string, CreateElementCall[]]>;
+}
+interface PersistedModuleInfo {
+  exportedName?: string;
+  anonymousExport?: PersistedComponentInfo;
+  requireBindings: Array<[string, string]>;
 }
 interface PersistedComponentInfo {
   name: string;
@@ -647,6 +695,7 @@ interface PersistedComponentInfo {
   annotations: { extendsClass?: string; props: string[] };
   detectedBase?: string;
   hardcodedProps?: string[];
+  uiReturn?: ComponentReturnInfo;
 }
 
 function persistFileFor(
@@ -666,6 +715,25 @@ function persistFileFor(
     "workspaceIndex",
     `${tag}.json`
   );
+}
+
+function serialiseComponentInfo(
+  info: DocumentComponentInfo
+): PersistedComponentInfo {
+  return {
+    name: info.name,
+    defLineIndex: info.defLineIndex,
+    paramTypeFields: info.paramTypeFields,
+    annotations: {
+      extendsClass: info.annotations.extendsClass,
+      props: info.annotations.props,
+    },
+    detectedBase: info.detectedBase,
+    hardcodedProps: info.hardcodedProps
+      ? Array.from(info.hardcodedProps)
+      : undefined,
+    uiReturn: info.uiReturn,
+  };
 }
 
 function serialiseCache(
@@ -689,16 +757,36 @@ function serialiseCache(
           hardcodedProps: info.hardcodedProps
             ? Array.from(info.hardcodedProps)
             : undefined,
+          uiReturn: info.uiReturn,
         },
       ]);
     }
     files[uri] = {
       fingerprint: entry.fingerprint,
       components,
+      module: {
+        exportedName: entry.module.exportedName,
+        anonymousExport: entry.module.anonymousExport
+          ? serialiseComponentInfo(entry.module.anonymousExport)
+          : undefined,
+        requireBindings: Array.from(entry.module.requireBindings.entries()),
+      },
       callSites: Array.from(entry.callSites.entries()),
     };
   }
-  return { version: PERSIST_VERSION, files };
+  return {
+    version: PERSIST_VERSION,
+    parserSignature: getParserSignature(),
+    files,
+  };
+}
+
+function getParserSignature(): string {
+  const aliases = getAliasPartition();
+  return JSON.stringify({
+    parens: aliases.parens,
+    curried: aliases.curried,
+  });
 }
 
 function deserialiseEntry(entry: PersistedFileEntry): CacheEntry {
@@ -716,11 +804,38 @@ function deserialiseEntry(entry: PersistedFileEntry): CacheEntry {
       hardcodedProps: info.hardcodedProps
         ? new Set(info.hardcodedProps)
         : undefined,
+      uiReturn: info.uiReturn,
     });
   }
   return {
     components,
+    module: {
+      exportedName: entry.module.exportedName,
+      anonymousExport: entry.module.anonymousExport
+        ? deserialiseComponentInfo(entry.module.anonymousExport)
+        : undefined,
+      requireBindings: new Map(entry.module.requireBindings),
+    },
     callSites: new Map(entry.callSites),
     fingerprint: entry.fingerprint,
+  };
+}
+
+function deserialiseComponentInfo(
+  info: PersistedComponentInfo
+): DocumentComponentInfo {
+  return {
+    name: info.name,
+    defLineIndex: info.defLineIndex,
+    paramTypeFields: info.paramTypeFields,
+    annotations: {
+      extendsClass: info.annotations.extendsClass,
+      props: info.annotations.props,
+    },
+    detectedBase: info.detectedBase,
+    hardcodedProps: info.hardcodedProps
+      ? new Set(info.hardcodedProps)
+      : undefined,
+    uiReturn: info.uiReturn,
   };
 }

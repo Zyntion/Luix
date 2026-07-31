@@ -4,6 +4,19 @@ All notable changes to **Luix** will be documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Changed
+
+- The Components view now discovers exported Vide wrapper and structural
+  components by following `require(...)` dependencies, including modules
+  that return imported primitives, other components, dynamic Vide children,
+  or UI-child tables.
+- Rojo `init.lua` / `init.luau` components are displayed under their folder
+  name without a duplicate `init` entry.
+- Story modules and private helper functions no longer appear as production
+  components, and deleted files are pruned from the persisted index.
+
 ## [1.5.1]
 
 Two of Roblox's content URL schemes are painful to type by hand and

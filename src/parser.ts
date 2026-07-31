@@ -52,6 +52,41 @@ export interface DocumentComponentInfo {
   /** Offset range of the first param's type annotation (after the `:`). */
   paramTypeStart?: number;
   paramTypeEnd?: number;
+  /**
+   * Conservative description of the value returned by this function.
+   * Workspace-wide component discovery resolves `call` and `collection`
+   * entries through the file's `require` bindings instead of guessing from
+   * identifier casing or project-specific component names.
+   */
+  uiReturn?: ComponentReturnInfo;
+}
+
+export type ComponentReturnInfo =
+  | {
+      kind: "factory";
+      base: string;
+    }
+  | {
+      kind: "call";
+      callee: string;
+    }
+  | {
+      kind: "collection";
+      callees: string[];
+    };
+
+export interface DocumentModuleInfo {
+  /** Name returned by the module, e.g. `return MyComponent`. */
+  exportedName?: string;
+  /** Metadata for an anonymous `return function(...) ... end` export. */
+  anonymousExport?: DocumentComponentInfo;
+  /** Local binding -> raw require expression inside `require(...)`. */
+  requireBindings: Map<string, string>;
+}
+
+export interface ModuleDocumentScan {
+  components: Map<string, DocumentComponentInfo>;
+  module: DocumentModuleInfo;
 }
 
 export interface CreateElementCall {
@@ -918,8 +953,12 @@ export function extractTypeFields(literalBody: string): string[] {
 }
 
 /**
- * Walk backward from `defLineIndex - 1` over consecutive `---` comment
- * lines and pull recognized directives.
+ * Walk backward from `defLineIndex - 1` over the component's leading
+ * documentation region and pull recognized directives.
+ *
+ * Luix component docs commonly group inherited and component-specific props
+ * with blank lines and ordinary `--` headings. Those separators are part of
+ * the same documentation region; stop only when actual code is reached.
  */
 export function parseAnnotationsForComponent(
   text: string,
@@ -931,10 +970,14 @@ export function parseAnnotationsForComponent(
 
   for (let i = defLineIndex - 1; i >= 0; i--) {
     const trimmed = lines[i].trimStart();
-    if (!trimmed.startsWith("---")) {
-      break;
+    if (trimmed.length === 0) {
+      continue;
     }
-    commentLines.unshift(trimmed);
+    if (trimmed.startsWith("--")) {
+      if (trimmed.startsWith("---")) commentLines.unshift(trimmed);
+      continue;
+    }
+    break;
   }
 
   for (const line of commentLines) {
@@ -961,7 +1004,7 @@ function findMatchingEnd(masked: string, startIdx: number): number {
   tokenRe.lastIndex = startIdx;
   let m: RegExpExecArray | null;
   while ((m = tokenRe.exec(masked)) !== null) {
-    if (LUA_BLOCK_OPENERS.has(m[0])) {
+    if (opensLuaBlock(masked, m[0], m.index)) {
       depth++;
     } else if (LUA_BLOCK_CLOSERS.has(m[0])) {
       depth--;
@@ -971,6 +1014,31 @@ function findMatchingEnd(masked: string, startIdx: number): number {
     }
   }
   return masked.length;
+}
+
+/**
+ * Luau's expression form (`return if condition then a else b`) has no
+ * matching `end`. Treating that `if` like a statement block makes every
+ * following function boundary drift, sometimes all the way to EOF.
+ */
+function opensLuaBlock(
+  maskedText: string,
+  word: string,
+  tokenOffset: number
+): boolean {
+  if (!LUA_BLOCK_OPENERS.has(word)) {
+    return false;
+  }
+  if (word !== "if") {
+    return true;
+  }
+
+  const lineStart = maskedText.lastIndexOf("\n", tokenOffset - 1) + 1;
+  const prefix = maskedText.slice(lineStart, tokenOffset).trimEnd();
+  if (prefix.length === 0) {
+    return true;
+  }
+  return !/(?:=|\breturn|\(|\{|\[|,)\s*$/.test(prefix);
 }
 
 function findMatchingBrace(text: string, openIdx: number): number {
@@ -1039,7 +1107,7 @@ export function detectReturnedClass(
     const word = m[0];
     if (word === "function") {
       stack.push("fn");
-    } else if (word === "if" || word === "do" || word === "repeat") {
+    } else if (opensLuaBlock(maskedText, word, m.index)) {
       stack.push(word);
     } else if (word === "end" || word === "until") {
       stack.pop();
@@ -1152,7 +1220,7 @@ function findReturnedRootCall(
     const word = m[0];
     if (word === "function") {
       stack.push("fn");
-    } else if (word === "if" || word === "do" || word === "repeat") {
+    } else if (opensLuaBlock(maskedText, word, m.index)) {
       stack.push(word);
     } else if (word === "end" || word === "until") {
       stack.pop();
@@ -1426,6 +1494,9 @@ export function scanDocument(
       def.paramName,
       partition
     );
+    const uiReturn: ComponentReturnInfo | undefined = detectedBase
+      ? { kind: "factory", base: detectedBase }
+      : analyzeComponentReturn(text, masked, def.bodyStart, def.bodyEnd);
 
     components.set(lastSegment, {
       name: lastSegment,
@@ -1439,6 +1510,7 @@ export function scanDocument(
       bodyEnd: def.bodyEnd,
       paramTypeStart: def.paramTypeStart,
       paramTypeEnd: def.paramTypeEnd,
+      uiReturn,
     });
   }
 
@@ -1447,6 +1519,285 @@ export function scanDocument(
     scanCache.shift();
   }
   return components;
+}
+
+const moduleScanCache: Array<{
+  text: string;
+  aliasesKey: string;
+  result: ModuleDocumentScan;
+}> = [];
+const MODULE_SCAN_CACHE_MAX = 8;
+
+/**
+ * Parse module-level exports and require bindings for workspace component
+ * discovery while preserving `scanDocument()` for existing editor features.
+ */
+export function scanModuleDocument(
+  text: string,
+  aliases: AliasPartition | string[]
+): ModuleDocumentScan {
+  const partition = asPartition(aliases);
+  const aliasesKey =
+    partition.parens.join("|") + "\0" + partition.curried.join("|");
+  for (let i = moduleScanCache.length - 1; i >= 0; i--) {
+    const entry = moduleScanCache[i];
+    if (entry.text === text && entry.aliasesKey === aliasesKey) {
+      const hit = moduleScanCache.splice(i, 1)[0];
+      moduleScanCache.push(hit);
+      return hit.result;
+    }
+  }
+
+  const components = scanDocument(text, partition);
+  const { masked } = getMaskedDoc(text);
+  const moduleExport = findModuleExport(text, masked, partition);
+  const result: ModuleDocumentScan = {
+    components,
+    module: {
+      exportedName: moduleExport.exportedName,
+      anonymousExport: moduleExport.anonymousExport,
+      requireBindings: collectRequireBindings(text, masked),
+    },
+  };
+
+  moduleScanCache.push({ text, aliasesKey, result });
+  if (moduleScanCache.length > MODULE_SCAN_CACHE_MAX) {
+    moduleScanCache.shift();
+  }
+  return result;
+}
+
+function analyzeComponentReturn(
+  originalText: string,
+  maskedText: string,
+  bodyStart: number,
+  bodyEnd: number
+): ComponentReturnInfo | undefined {
+  for (const returnOffset of findFunctionLevelReturns(
+    maskedText,
+    bodyStart,
+    bodyEnd
+  )) {
+    const expressionStart = returnOffset + "return".length;
+    const after = originalText.slice(expressionStart, bodyEnd);
+    const call =
+      /^\s*\(?\s*([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s*(?=\(|\{)/.exec(
+        after
+      );
+    if (call) {
+      return { kind: "call", callee: call[1] };
+    }
+
+    const tableStart = findReturnedTableStart(
+      originalText,
+      maskedText,
+      expressionStart,
+      bodyEnd,
+      bodyStart
+    );
+    if (tableStart !== undefined) {
+      const tableEnd = findMatchingBrace(maskedText, tableStart);
+      if (tableEnd !== -1 && tableEnd <= bodyEnd) {
+        return {
+          kind: "collection",
+          callees: collectCalledIdentifiers(
+            maskedText,
+            tableStart + 1,
+            tableEnd
+          ),
+        };
+      }
+    }
+  }
+  return undefined;
+}
+
+function findFunctionLevelReturns(
+  maskedText: string,
+  bodyStart: number,
+  bodyEnd: number
+): number[] {
+  const out: number[] = [];
+  const stack: string[] = [];
+  const tokenRe = /\b\w+\b/g;
+  tokenRe.lastIndex = bodyStart;
+  let match: RegExpExecArray | null;
+  while ((match = tokenRe.exec(maskedText)) !== null) {
+    if (match.index >= bodyEnd) break;
+    const word = match[0];
+    if (word === "function") {
+      stack.push("fn");
+    } else if (opensLuaBlock(maskedText, word, match.index)) {
+      stack.push(word);
+    } else if (word === "end" || word === "until") {
+      stack.pop();
+    } else if (word === "return" && !stack.includes("fn")) {
+      out.push(match.index);
+    }
+  }
+  return out;
+}
+
+function findReturnedTableStart(
+  originalText: string,
+  maskedText: string,
+  expressionStart: number,
+  bodyEnd: number,
+  bodyStart: number
+): number | undefined {
+  let i = expressionStart;
+  while (i < bodyEnd && /\s/.test(originalText[i])) i++;
+  while (originalText[i] === "(") {
+    i++;
+    while (i < bodyEnd && /\s/.test(originalText[i])) i++;
+  }
+  if (originalText[i] === "{") {
+    return i;
+  }
+
+  const identifier = /^([A-Za-z_]\w*)/.exec(
+    originalText.slice(i, bodyEnd)
+  );
+  if (!identifier) return undefined;
+  const escapedName = escapeRegex(identifier[1]);
+  const beforeReturn = maskedText.slice(bodyStart, expressionStart);
+  const initializer = new RegExp(
+    `\\blocal\\s+${escapedName}(?:\\s*:[^=\\n]+)?\\s*=\\s*\\{`,
+    "g"
+  );
+  let match: RegExpExecArray | null;
+  let lastBrace: number | undefined;
+  while ((match = initializer.exec(beforeReturn)) !== null) {
+    lastBrace = bodyStart + match.index + match[0].lastIndexOf("{");
+  }
+  return lastBrace;
+}
+
+function collectCalledIdentifiers(
+  maskedText: string,
+  start: number,
+  end: number
+): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const re =
+    /\b([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s*(?=\(|\{)/g;
+  re.lastIndex = start;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(maskedText)) !== null && match.index < end) {
+    const name = match[1];
+    if (name === "function") continue;
+    if (!seen.has(name)) {
+      seen.add(name);
+      out.push(name);
+    }
+  }
+  return out;
+}
+
+function collectRequireBindings(
+  originalText: string,
+  maskedText: string
+): Map<string, string> {
+  const out = new Map<string, string>();
+  const re =
+    /\blocal\s+([A-Za-z_]\w*)(?:\s*:[^=\n]+)?\s*=\s*require\s*\(/g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(maskedText)) !== null) {
+    const openParen = match.index + match[0].length - 1;
+    const closeParen = findMatchingParen(maskedText, openParen);
+    if (closeParen === -1) continue;
+    out.set(
+      match[1],
+      originalText.slice(openParen + 1, closeParen).trim()
+    );
+  }
+  return out;
+}
+
+function findModuleExport(
+  originalText: string,
+  maskedText: string,
+  aliases: AliasPartition
+): {
+  exportedName?: string;
+  anonymousExport?: DocumentComponentInfo;
+} {
+  const stack: string[] = [];
+  const tokenRe = /\b\w+\b/g;
+  let match: RegExpExecArray | null;
+  while ((match = tokenRe.exec(maskedText)) !== null) {
+    const word = match[0];
+    if (word === "function") {
+      stack.push("fn");
+      continue;
+    }
+    if (opensLuaBlock(maskedText, word, match.index)) {
+      stack.push(word);
+      continue;
+    }
+    if (word === "end" || word === "until") {
+      stack.pop();
+      continue;
+    }
+    if (word !== "return" || stack.includes("fn")) {
+      continue;
+    }
+
+    const afterStart = match.index + word.length;
+    const after = originalText.slice(afterStart);
+    const named = /^\s*([A-Za-z_]\w*)\b/.exec(after);
+    if (named && named[1] !== "function") {
+      return { exportedName: named[1] };
+    }
+
+    const anonymous = /^\s*function\s*\(/.exec(after);
+    if (!anonymous) continue;
+    const functionWordOffset = afterStart + anonymous[0].indexOf("function");
+    const openParen = originalText.indexOf(
+      "(",
+      functionWordOffset + "function".length
+    );
+    if (openParen === -1) continue;
+    const signature = parseParameterList(maskedText, openParen);
+    if (!signature) continue;
+    const bodyStart = signature.paramListEnd + 1;
+    const bodyEnd = findMatchingEnd(maskedText, bodyStart);
+    const detectedBase = detectReturnedClass(
+      originalText,
+      maskedText,
+      bodyStart,
+      bodyEnd,
+      aliases
+    );
+    const uiReturn: ComponentReturnInfo | undefined = detectedBase
+      ? { kind: "factory", base: detectedBase }
+      : analyzeComponentReturn(
+          originalText,
+          maskedText,
+          bodyStart,
+          bodyEnd
+        );
+    const defLineIndex = lineNumberOf(originalText, functionWordOffset);
+    return {
+      anonymousExport: {
+        name: "",
+        defLineIndex,
+        annotations: parseAnnotationsForComponent(
+          originalText,
+          lineNumberOf(originalText, match.index)
+        ),
+        detectedBase,
+        paramName: signature.firstParamName,
+        bodyStart,
+        bodyEnd,
+        paramTypeStart: signature.firstParamTypeStart,
+        paramTypeEnd: signature.firstParamTypeEnd,
+        uiReturn,
+      },
+    };
+  }
+  return {};
 }
 
 // ============================================================================

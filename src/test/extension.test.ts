@@ -8,8 +8,13 @@ import {
   extractTypeFields,
   parseAnnotationsForComponent,
   scanDocument,
+  scanModuleDocument,
   _internal,
 } from "../extension";
+import {
+  discoverComponents,
+  IndexedModuleFile,
+} from "../componentDiscovery";
 
 const ALIASES = _internal.DEFAULT_ALIASES;
 
@@ -966,6 +971,331 @@ const ALL_PARTITION = {
   ],
 };
 
+suite("Vide module component discovery metadata", () => {
+  test("records an exported wrapper and its require target", () => {
+    const text = `
+local BaseFrame = require(ReplicatedStorage.Shared.UI.BaseFrame)
+
+local function WrappedComponent(props)
+    return BaseFrame(props)
+end
+
+return WrappedComponent
+`.trimStart();
+    const scan = scanModuleDocument(text, VIDE_PARTITION);
+    assert.strictEqual(scan.module.exportedName, "WrappedComponent");
+    assert.strictEqual(
+      scan.module.requireBindings.get("BaseFrame"),
+      "ReplicatedStorage.Shared.UI.BaseFrame"
+    );
+    assert.deepStrictEqual(scan.components.get("WrappedComponent")?.uiReturn, {
+      kind: "call",
+      callee: "BaseFrame",
+    });
+  });
+
+  test("records a returned local UI-child table", () => {
+    const text = `
+local Vide = require(ReplicatedStorage.Packages.Vide)
+
+local function InterfaceRoot()
+    local children = {
+        Vide.show(isOpen, function()
+            return ContentComponent()
+        end),
+    }
+    return children
+end
+
+return InterfaceRoot
+`.trimStart();
+    const scan = scanModuleDocument(text, VIDE_PARTITION);
+    assert.deepStrictEqual(scan.components.get("InterfaceRoot")?.uiReturn, {
+      kind: "collection",
+      callees: ["Vide.show", "ContentComponent"],
+    });
+  });
+
+  test("records direct Vide dynamic-child returns", () => {
+    const text = `
+local Vide = require(ReplicatedStorage.Packages.Vide)
+local function ConditionalGraphic()
+    return Vide.show(hasIcon, renderIcon)
+end
+return ConditionalGraphic
+`.trimStart();
+    const scan = scanModuleDocument(text, VIDE_PARTITION);
+    assert.deepStrictEqual(scan.components.get("ConditionalGraphic")?.uiReturn, {
+      kind: "call",
+      callee: "Vide.show",
+    });
+  });
+
+  test("module export selects the public component, not private helpers", () => {
+    const text = `
+local function createPreview()
+    return Vide.create("Frame", {})
+end
+local function PublicComponent()
+    return Frame({ createPreview() })
+end
+return PublicComponent
+`.trimStart();
+    const scan = scanModuleDocument(text, VIDE_PARTITION);
+    assert.strictEqual(scan.module.exportedName, "PublicComponent");
+    assert.strictEqual(scan.components.get("createPreview")?.detectedBase, "Frame");
+    assert.deepStrictEqual(scan.components.get("PublicComponent")?.uiReturn, {
+      kind: "call",
+      callee: "Frame",
+    });
+  });
+
+  test("supports anonymous exported components", () => {
+    const text = `
+return function(props)
+    return Vide.create("Frame", props)
+end
+`.trimStart();
+    const scan = scanModuleDocument(text, VIDE_PARTITION);
+    assert.strictEqual(scan.module.exportedName, undefined);
+    assert.strictEqual(scan.module.anonymousExport?.detectedBase, "Frame");
+  });
+
+  test("grouped Luix annotations remain attached to the function", () => {
+    const text = `
+---@extends ImageButton
+
+-- Props inherited from Button
+---@prop HoverScale number?
+
+-- Props from this component
+---@prop Color Color3
+local function StyledButton(props)
+    return Button(props)
+end
+return StyledButton
+`.trimStart();
+    const info = scanModuleDocument(
+      text,
+      VIDE_PARTITION
+    ).components.get("StyledButton");
+    assert.strictEqual(info?.annotations.extendsClass, "ImageButton");
+    assert.deepStrictEqual(info?.annotations.props, ["HoverScale", "Color"]);
+  });
+
+  test("Luau if-expressions do not hide a later module export", () => {
+    const text = `
+local function NestedChild()
+    local position = if isOffset then UDim2.fromOffset(1, 2) else nil
+    return Frame({ Position = position })
+end
+
+local function RootComponent()
+    return Frame({ NestedChild() })
+end
+
+return RootComponent
+`.trimStart();
+    const scan = scanModuleDocument(text, VIDE_PARTITION);
+    assert.strictEqual(scan.module.exportedName, "RootComponent");
+    assert.deepStrictEqual(scan.components.get("NestedChild")?.uiReturn, {
+      kind: "call",
+      callee: "Frame",
+    });
+    assert.deepStrictEqual(scan.components.get("RootComponent")?.uiReturn, {
+      kind: "call",
+      callee: "Frame",
+    });
+  });
+});
+
+suite("Export-aware component discovery", () => {
+  function moduleFile(
+    relativeFile: string,
+    text: string
+  ): IndexedModuleFile {
+    const scan = scanModuleDocument(text.trimStart(), VIDE_PARTITION);
+    return {
+      uriString: `file:///fixture/${relativeFile}`,
+      workspaceKey: "fixture",
+      relativeFile,
+      components: scan.components,
+      module: scan.module,
+    };
+  }
+
+  test("resolves direct, wrapper, structural, and dynamic Vide modules", () => {
+    const files = [
+      moduleFile(
+        "src/shared/ui/BaseFrame.luau",
+        `
+local Vide = require(ReplicatedStorage.Packages.Vide)
+local function BaseFrame(props)
+    return Vide.create("Frame", props)
+end
+return BaseFrame
+`
+      ),
+      moduleFile(
+        "src/ui/Surface.luau",
+        `
+local BaseFrame = require(ReplicatedStorage.Shared.UI.BaseFrame)
+local function Surface(props)
+    return BaseFrame(props)
+end
+return Surface
+`
+      ),
+      moduleFile(
+        "src/ui/Overlay/init.luau",
+        `
+local Surface = require(script.Parent.Surface)
+local function Overlay()
+    return Surface({ Name = "Overlay" })
+end
+return Overlay
+`
+      ),
+      moduleFile(
+        "src/ui/InterfaceRoot.luau",
+        `
+local Vide = require(ReplicatedStorage.Packages.Vide)
+local Overlay = require(script.Parent.Overlay)
+local function InterfaceRoot()
+    local children = {
+        Vide.show(isOpen, function()
+            return Overlay()
+        end),
+    }
+    return children
+end
+return InterfaceRoot
+`
+      ),
+    ];
+
+    const result = discoverComponents(files);
+    assert.deepStrictEqual(
+      result.map((component) => component.name),
+      ["BaseFrame", "InterfaceRoot", "Overlay", "Surface"]
+    );
+    const folderModule = result.find(
+      (component) => component.name === "Overlay"
+    );
+    assert.strictEqual(folderModule?.isFolderModule, true);
+    assert.strictEqual(
+      folderModule?.modulePath,
+      "src/ui/Overlay"
+    );
+  });
+
+  test("does not surface private helpers, stories, or arbitrary utilities", () => {
+    const files = [
+      moduleFile(
+        "src/shared/ui/BaseFrame.luau",
+        `
+local function BaseFrame(props)
+    return Vide.create("Frame", props)
+end
+return BaseFrame
+`
+      ),
+      moduleFile(
+        "src/support/StringTools.luau",
+        `
+local function previewFrame()
+    return Vide.create("Frame", {})
+end
+local function StringTools(value)
+    return string.upper(value)
+end
+return StringTools
+`
+      ),
+      moduleFile(
+        "src/ui/Preview.story.luau",
+        `
+local function StoryHelper()
+    return Vide.create("Frame", {})
+end
+return function(target)
+    return Vide.mount(StoryHelper, target)
+end
+`
+      ),
+    ];
+
+    assert.deepStrictEqual(
+      discoverComponents(files).map((component) => component.name),
+      ["BaseFrame"]
+    );
+  });
+
+  test("uses the file or folder name for anonymous exported components", () => {
+    const result = discoverComponents([
+      moduleFile(
+        "src/ui/MainView.luau",
+        `
+return function(props)
+    return Vide.create("ScreenGui", props)
+end
+`
+      ),
+    ]);
+    assert.strictEqual(result.length, 1);
+    assert.strictEqual(result[0].name, "MainView");
+  });
+
+  test("keeps named exports except that init modules use the folder name", () => {
+    const result = discoverComponents([
+      moduleFile(
+        "src/ui/LegacyFileName.luau",
+        `
+local function ActualComponent()
+    return Vide.create("Frame", {})
+end
+return ActualComponent
+`
+      ),
+      moduleFile(
+        "src/ui/FolderComponent/init.luau",
+        `
+local function OldInternalName()
+    return Vide.create("Frame", {})
+end
+return OldInternalName
+`
+      ),
+    ]);
+    assert.deepStrictEqual(
+      result.map((component) => component.name),
+      ["ActualComponent", "FolderComponent"]
+    );
+  });
+
+  test("uses private UI helpers as evidence without listing them", () => {
+    const result = discoverComponents([
+      moduleFile(
+        "src/ui/CompositeView.luau",
+        `
+local function createContents()
+    return Vide.create("Frame", { Name = "Contents" })
+end
+local function CompositeView()
+    return createContents()
+end
+return CompositeView
+`
+      ),
+    ]);
+    assert.deepStrictEqual(
+      result.map((component) => component.name),
+      ["CompositeView"]
+    );
+    assert.strictEqual(result[0].base, "Frame");
+  });
+});
+
 suite("Fusion call detection", () => {
   test("findEnclosingPropsCall picks up `New \"Frame\" { | }`", () => {
     const text = `New "Frame" { | }`;
@@ -1253,6 +1583,8 @@ suite("buildFolderTree", () => {
         annotations: { props: [] },
         detectedBase: "Frame",
       },
+      isFolderModule: /\/init\.lua(u)?$/.test(fsPath),
+      modulePath: fsPath.replace(/\/init\.lua(u)?$/, "").replace(/\.lua(u)?$/, ""),
     };
   }
 

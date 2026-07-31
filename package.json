@@ -103,7 +103,7 @@
     "viewsWelcome": [
       {
         "view": "luix.components",
-        "contents": "No UI components found in this workspace yet.\n\nLuix lists every function that returns an `e(...)`, `New \"X\" { ... }`, or `create \"X\" { ... }` element, or that carries a `---@extends ClassName` annotation.\n\n[Create a new component](command:luix.newComponentHere)\n\n[Open the Luix documentation](https://github.com/ericplane/luix)\n\nIf you do have components but they're not appearing, they might be excluded by `luix.exclude` — check your [settings](command:workbench.action.openSettings?%22luix%22).",
+        "contents": "No exported UI components found in this workspace yet.\n\nLuix follows module exports and component `require(...)` calls, including Vide wrappers, dynamic UI-child returns, and Rojo folder modules backed by `init.luau`. Luix annotations are optional discovery hints.\n\n[Create a new component](command:luix.newComponentHere)\n\n[Open the Luix documentation](https://github.com/ericplane/luix)\n\nIf you do have components but they're not appearing, they might be excluded by `luix.exclude` — check your [settings](command:workbench.action.openSettings?%22luix%22).",
         "when": "workspaceFolderCount > 0"
       },
       {
